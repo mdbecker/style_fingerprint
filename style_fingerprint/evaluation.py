@@ -1,0 +1,376 @@
+"""Grouped development evaluation, root-level calibration and operating decisions."""
+from collections import Counter, defaultdict
+from dataclasses import replace
+import numpy as np
+
+
+def root_id(document):
+    return getattr(document, 'root_document_id', None) or document.document_id
+
+
+def _author_key(document):
+    return str(getattr(document,'author_id',None) or (document.metadata or {}).get('author_id') or document.author or '').strip().casefold()
+
+
+def root_sample_weights(root_ids, labels, author_ids=None):
+    """Equal root influence; known negative authors divide equal influence among roots."""
+    authors = list(author_ids) if author_ids is not None else [None] * len(root_ids)
+    counts = Counter(root_ids)
+    author_roots = defaultdict(set)
+    for root, label, author in zip(root_ids, labels, authors):
+        if not label and author:
+            author_roots[author].add(root)
+    # Preserve average negative root mass while balancing known authors.
+    known_roots = sum(map(len, author_roots.values()))
+    author_mass = known_roots / len(author_roots) if author_roots else 1
+    return np.array([author_mass / len(author_roots[author]) / counts[root]
+                     if not label and author else 1 / counts[root]
+                     for root, label, author in zip(root_ids, labels, authors)], dtype=float)
+
+
+def balanced_root_sample_weights(root_ids, labels, author_ids=None):
+    """Balance class mass after hierarchy weighting, independent of sklearn version."""
+    weights = root_sample_weights(root_ids, labels, author_ids)
+    labels = np.asarray(labels, dtype=int)
+    total = weights.sum()
+    classes = np.unique(labels)
+    for label in classes:
+        mask = labels == label
+        weights[mask] *= total / (len(classes) * weights[mask].sum())
+    return weights
+
+
+def aggregate_root_predictions(root_ids, margins, labels=None):
+    """One median observation per root; missing OOF margins are never fabricated."""
+    groups = defaultdict(list)
+    root_labels = {}
+    for index, (root, margin) in enumerate(zip(root_ids, margins)):
+        if np.isfinite(margin):
+            groups[root].append(float(margin))
+            if labels is not None:
+                label = int(labels[index])
+                if root in root_labels and root_labels[root] != label:
+                    raise ValueError('One root cannot have conflicting labels')
+                root_labels[root] = label
+    result = {}
+    for root, values in groups.items():
+        summary = {key: float(value) for key, value in zip(('min','p25','median','p75','max'), np.percentile(values,[0,25,50,75,100]))}
+        summary.update(raw_margin=summary['median'], variance=float(np.var(values)), view_count=len(values))
+        if labels is not None:
+            summary['label'] = root_labels[root]
+        result[root] = summary
+    return result
+
+
+def negative_eligibility(root_ids, labels, author_ids=None):
+    authors = list(author_ids) if author_ids is not None else [None]*len(root_ids)
+    negatives = {root for root,label in zip(root_ids,labels) if not label}
+    known = {author for author,label in zip(authors,labels) if not label and author}
+    return len(negatives) >= 10 and (not known or len(known) >= 3)
+
+
+def grouped_splits(labels, root_ids, author_ids=None, *, seed=42, n_splits=3, group_ids=None):
+    """Keep positive roots and known negative authors wholly within one fold."""
+    from sklearn.model_selection import StratifiedGroupKFold
+    labels = np.asarray(labels,dtype=int)
+    authors = list(author_ids) if author_ids is not None else [None]*len(labels)
+    groups = [f'author:{a}' if not y and a else f'root:{r}' for r,y,a in zip(root_ids,labels,authors)]
+    if group_ids is not None:
+        groups=list(group_ids)
+    count = min(n_splits, *(len({g for g,y in zip(groups,labels) if y == label}) for label in (0,1)))
+    if count < 2:
+        raise ValueError('Insufficient independent groups for supervised calibration')
+    result = list(StratifiedGroupKFold(n_splits=count,shuffle=True,random_state=seed).split(np.zeros(len(labels)),labels,groups))
+    if any(len(set(labels[train]))<2 or len({groups[i] for i in train if labels[i]})<2 for train,_ in result):
+        buckets = [[],[]]
+        assignment = {}
+        for label in (0,1):
+            for index, group in enumerate(sorted({g for g,y in zip(groups,labels) if y==label})):
+                assignment[group] = index%2
+        for index,group in enumerate(groups):
+            buckets[assignment[group]].append(index)
+        result = [(np.array(sorted(set(range(len(labels)))-set(test)),dtype=int),np.array(test,dtype=int)) for test in buckets]
+    return result
+
+
+def group_splits(fp, docs, positive_ids):
+    mapping=(fp.manifest.get('holdout_split') or {}).get('document_groups')
+    if mapping:
+        groups=[mapping.get(root_id(d),mapping.get(d.document_id,root_id(d))) for d in docs]
+    else:
+        from .holdout import document_groups
+        normalized = [replace(d, metadata={**(d.metadata or {}), 'genre': 'blog' if root_id(d) in positive_ids else 'negative_posts'}) for d in docs]
+        connected = document_groups(normalized)
+        groups = [connected[d.document_id] for d in docs]
+    return grouped_splits([int(root_id(d) in positive_ids) for d in docs], [root_id(d) for d in docs],
+                          [_author_key(d) for d in docs], seed=fp.config.seed,group_ids=groups)
+
+
+def choose_verifier(logistic_auc, lightgbm_auc, logistic_tpr5=None, lightgbm_tpr5=None):
+    improved = lightgbm_auc is not None and lightgbm_auc - logistic_auc >= .02-1e-12
+    preserved = logistic_tpr5 is None or lightgbm_tpr5 is not None and lightgbm_tpr5 >= logistic_tpr5-1e-12
+    return 'lightgbm' if improved and preserved else 'logistic_regression'
+
+
+def select_thresholds(labels,scores,*,target_fpr=.05,target_fnr=.05):
+    """Select on development root scores only; thresholds use the scores' own units."""
+    labels=np.asarray(labels,dtype=int); scores=np.asarray(scores,dtype=float)
+    if len(scores)!=len(labels) or not np.isfinite(scores).all() or set(labels)!={0,1}:
+        raise ValueError('Threshold selection needs finite positive and negative development predictions')
+    ceiling = 1. if scores.max() <= 1 else 100.
+    candidates = np.unique(np.r_[0.,scores,np.minimum(np.nextafter(scores,np.inf),ceiling),ceiling])
+    operating=[]
+    for threshold in candidates:
+        accepted=scores>=threshold
+        operating.append((float(np.mean(accepted[labels==0])),float(np.mean(accepted[labels==1])),float(threshold)))
+    feasible=[row for row in operating if row[0]<=target_fpr+1e-12]
+    achieved=bool(feasible)
+    if not feasible:
+        best=min(row[0] for row in operating)
+        feasible=[row for row in operating if row[0]==best]
+    fpr,tpr,match=min(feasible,key=lambda row:(-row[1],row[2]))
+    mismatch=None
+    reliable = min(np.sum(labels==0),np.sum(labels==1)) >= int(np.ceil(1/min(target_fpr,target_fnr)))
+    if reliable:
+        lower=[float(t) for t in candidates if t<match
+               and not np.isclose(t,match,rtol=1e-9,atol=8*np.finfo(float).eps*ceiling)
+               and np.mean(scores[labels==1]<t)<=target_fnr+1e-12]
+        if lower:
+            mismatch=max(lower)
+            # A zero cutoff conveys no supported mismatch region.
+            if mismatch <= scores.min():
+                mismatch=None
+    return {'match_threshold':match,'mismatch_threshold':mismatch,'target_achieved':achieved,
+            'target_false_accept_rate':target_fpr,'false_positive_rate':fpr,'true_positive_rate':tpr,
+            'limitation':None if achieved else 'The development predictions cannot achieve the 5% false-acceptance target.'}
+
+
+def decision_for_score(score,match_threshold,mismatch_threshold=None):
+    if score>=match_threshold:
+        return 'MATCH'
+    if mismatch_threshold is None:
+        return 'INCONCLUSIVE_OR_MISMATCH'
+    return 'MISMATCH' if score<mismatch_threshold else 'INCONCLUSIVE'
+
+
+def _classification_metrics(labels,scores):
+    from sklearn.metrics import roc_auc_score,average_precision_score,roc_curve,brier_score_loss
+    labels=np.asarray(labels);scores=np.asarray(scores)
+    fpr,tpr,_=roc_curve(labels,scores)
+    eer_index=int(np.argmin(abs(fpr-(1-tpr))))
+    ece=0.
+    for low in np.linspace(0,.9,10):
+        mask=(scores>=low)&(scores<low+.1 if low<.9 else scores<=1)
+        if mask.any():
+            ece+=mask.mean()*abs(labels[mask].mean()-scores[mask].mean())
+    result={'auroc':float(roc_auc_score(labels,scores)), 'average_precision':float(average_precision_score(labels,scores)),
+            'eer':float((fpr[eer_index]+1-tpr[eer_index])/2),'brier':float(brier_score_loss(labels,scores)), 'calibration_error':float(ece)}
+    result.update({f'tpr_at_{n}pct_fpr':float(max(tpr[fpr<=n/100],default=0)) for n in (1,5,10)})
+    return result
+
+
+def performance_report(labels,scores,threshold=None,mismatch_threshold=None):
+    labels=np.asarray(labels,dtype=int);scores=np.asarray(scores,dtype=float)
+    if threshold is None:
+        threshold=select_thresholds(labels,scores)['match_threshold'] if set(labels)=={0,1} else 1.
+    predicted=scores>=threshold
+    tp=int(np.sum(predicted&(labels==1)));tn=int(np.sum(~predicted&(labels==0)))
+    fp=int(np.sum(predicted&(labels==0)));fn=int(np.sum(~predicted&(labels==1)))
+    result={'accuracy':float((tp+tn)/len(labels)) if len(labels) else None,
+            'true_positive_rate':tp/(tp+fn) if tp+fn else None,'false_positive_rate':fp/(fp+tn) if fp+tn else None,
+            'confusion_matrix':{'true_positive':tp,'true_negative':tn,'false_positive':fp,'false_negative':fn},
+            'match_threshold':float(threshold),'mismatch_threshold':mismatch_threshold,
+            'inconclusive_rate':float(np.mean([decision_for_score(s,threshold,mismatch_threshold).startswith('INCONCLUSIVE') for s in scores])) if len(scores) else None}
+    if len(set(labels))==2:
+        result.update(_classification_metrics(labels,scores))
+    return result
+
+
+def _estimator(kind,seed):
+    from sklearn.pipeline import make_pipeline
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.linear_model import LogisticRegression
+    if kind=='logistic_regression':
+        return make_pipeline(StandardScaler(),LogisticRegression(C=.1,max_iter=2000,random_state=seed,class_weight=None))
+    from lightgbm import LGBMClassifier
+    return LGBMClassifier(n_estimators=50,num_leaves=7,max_depth=3,min_child_samples=2,learning_rate=.05,random_state=seed,n_jobs=1,verbosity=-1,deterministic=True,force_col_wise=True)
+
+
+def _margin(estimator,kind,x):
+    return np.asarray(estimator.decision_function(x) if kind=='logistic_regression' else estimator.predict(x,raw_score=True))
+
+
+def _fit_comparison_estimator(kind,seed,x,documents,positive_ids):
+    labels=[int(root_id(d) in positive_ids) for d in documents]
+    weights=root_sample_weights([root_id(d) for d in documents],labels,[_author_key(d) for d in documents])
+    balanced_weights=balanced_root_sample_weights([root_id(d) for d in documents],labels,[_author_key(d) for d in documents])
+    estimator=_estimator(kind,seed)
+    kwargs={'logisticregression__sample_weight':balanced_weights,'standardscaler__sample_weight':weights} if kind=='logistic_regression' else {'sample_weight':balanced_weights}
+    return estimator.fit(x,labels,**kwargs)
+
+
+def fit_calibrator(margins,labels,seed,positive_genres=None):
+    from sklearn.linear_model import LogisticRegression
+    labels=np.asarray(labels);margins=np.asarray(margins,dtype=float)
+    valid=np.isfinite(margins)
+    labels=labels[valid];margins=margins[valid]
+    if set(labels)!={0,1}:
+        raise ValueError('Calibration needs both positive and negative validation examples')
+    if positive_genres is not None and len(positive_genres)!=len(valid):
+        raise ValueError('Calibration genre labels must match the example count')
+    weights=np.array([1/np.sum(labels==y) for y in labels])
+    return LogisticRegression(C=1,random_state=seed,tol=1e-10,max_iter=2000).fit(margins.reshape(-1,1),labels,sample_weight=weights)
+
+
+def fit_root_calibrator(root_ids,margins,labels,seed):
+    roots=aggregate_root_predictions(root_ids,margins,labels)
+    return fit_calibrator([d['raw_margin'] for d in roots.values()],[d['label'] for d in roots.values()],seed)
+
+
+def _views(documents,seed):
+    from .corpus import generate_training_views
+    return [view for document in documents for view in generate_training_views(document,seed=seed)]
+
+
+def _root_margins(documents,views,margins):
+    aggregated=aggregate_root_predictions([root_id(d) for d in views],margins)
+    return np.array([aggregated[root_id(d)]['raw_margin'] for d in documents])
+
+
+def _fold_metadata(documents,train,test,positive_ids):
+    return {'training_document_ids':[root_id(documents[i]) for i in train],
+            'test_document_ids':[root_id(documents[i]) for i in test],
+            'training_negative_author_ids':sorted({_author_key(documents[i]) for i in train if root_id(documents[i]) not in positive_ids and _author_key(documents[i])}),
+            'test_negative_author_ids':sorted({_author_key(documents[i]) for i in test if root_id(documents[i]) not in positive_ids and _author_key(documents[i])}),
+            'reference_document_ids':[root_id(documents[i]) for i in train if root_id(documents[i]) in positive_ids]}
+
+
+def run_supervised(fp,negatives):
+    """Nested author/root OOF evaluation using weighted views and root calibration."""
+    from .corpus import word_count
+    negatives=list({d.clean_text:d for d in negatives}.values())
+    positives=list({d.clean_text:d for d in fp.documents if root_id(d) in fp.manifest['historical_document_ids']}.values())
+    author_counts=Counter(_author_key(d) for d in negatives if _author_key(d))
+    if author_counts and max(author_counts.values()) > len(negatives)/2:
+        fp.manifest['warnings'].append('One author dominates the negative corpus; balanced author weights limit training influence, but overall metrics may hide poor generalization. Inspect per-author held-out results.')
+    if not negative_eligibility([root_id(d) for d in negatives],[0]*len(negatives),[_author_key(d) for d in negatives]) or len(positives)<6:
+        if negatives:
+            fp.manifest['warnings'].append('Supervised mode requires 10 independent negatives, at least 3 known negative authors when metadata exists, and 6 independent positives; using reference similarity.')
+        return
+    known_authors={_author_key(d) for d in negatives if _author_key(d)}
+    fp.manifest['negative_grouping']='author' if known_authors else 'document'
+    docs=positives+negatives
+    positive_ids={root_id(d) for d in positives}
+    labels=np.array([int(root_id(d) in positive_ids) for d in docs])
+    seed=fp.config.seed
+    kinds=['logistic_regression']
+    try:
+        import lightgbm  # noqa: F401
+        kinds.append('lightgbm')
+    except (ImportError,OSError):
+        fp.manifest['warnings'].append('LightGBM unavailable; install the supervised extra and its native OpenMP runtime to compare it with logistic regression.')
+    predictions={kind:np.full(len(docs),np.nan) for kind in kinds}
+    margins={kind:np.full(len(docs),np.nan) for kind in kinds}
+    nested_predictions=np.full(len(docs),np.nan)
+    components=np.zeros((len(docs),3))
+    folds=[]
+    for train,test in group_splits(fp,docs,positive_ids):
+        train_docs=[docs[i] for i in train];test_docs=[docs[i] for i in test]
+        train_views=_views(train_docs,seed);test_views=_views(test_docs,seed)
+        references=[root_id(d) for d in train_docs if root_id(d) in positive_ids]
+        x_train,names=fp._comparison_rows(train_views,references)
+        x_test,_=fp._comparison_rows(test_views,references)
+        for column,key in enumerate(('authorship_embedding','stylometry','char_ngram')):
+            values=aggregate_root_predictions([root_id(d) for d in test_views],x_test[:,names.index(key)])
+            components[test,column]=[values[root_id(d)]['raw_margin']*100 for d in test_docs]
+        inner_splits=group_splits(fp,train_docs,positive_ids)
+        inner_margins={kind:np.full(len(train_docs),np.nan) for kind in kinds}
+        for inner_train,inner_test in inner_splits:
+            inner_docs=[train_docs[i] for i in inner_train]
+            inner_test_docs=[train_docs[i] for i in inner_test]
+            inner_views=_views(inner_docs,seed);inner_test_views=_views(inner_test_docs,seed)
+            inner_refs=[root_id(d) for d in inner_docs if root_id(d) in positive_ids]
+            xi,_=fp._comparison_rows(inner_views,inner_refs)
+            xt,_=fp._comparison_rows(inner_test_views,inner_refs)
+            for kind in kinds:
+                estimator=_fit_comparison_estimator(kind,seed,xi,inner_views,positive_ids)
+                inner_margins[kind][inner_test]=_root_margins(inner_test_docs,inner_test_views,_margin(estimator,kind,xt))
+        inner_metrics={}
+        for kind in kinds:
+            calibrator=fit_calibrator(inner_margins[kind],labels[train],seed)
+            inner_scores=calibrator.predict_proba(inner_margins[kind].reshape(-1,1))[:,1]
+            inner_metrics[kind]=_classification_metrics(labels[train],inner_scores)
+            estimator=_fit_comparison_estimator(kind,seed,x_train,train_views,positive_ids)
+            margins[kind][test]=_root_margins(test_docs,test_views,_margin(estimator,kind,x_test))
+            predictions[kind][test]=calibrator.predict_proba(margins[kind][test].reshape(-1,1))[:,1]
+        lr=inner_metrics['logistic_regression'];gb=inner_metrics.get('lightgbm',{})
+        nested_kind=choose_verifier(lr['auroc'],gb.get('auroc'),lr['tpr_at_5pct_fpr'],gb.get('tpr_at_5pct_fpr'))
+        nested_predictions[test]=predictions[nested_kind][test]
+        fold=_fold_metadata(docs,train,test,positive_ids)
+        fold.update(nested_selected_model=nested_kind,selection_document_ids=[root_id(d) for d in train_docs],
+                    inner_selection_auroc={kind:metric['auroc'] for kind,metric in inner_metrics.items()},
+                    test_positive_ids=[root_id(docs[i]) for i in test if labels[i]],
+                    calibration_training_ids=[root_id(d) for d in train_docs],
+                    training_view_ids=[d.document_id for d in train_views],test_view_ids=[d.document_id for d in test_views],
+                    inner_folds=[_fold_metadata(train_docs,it,iv,positive_ids) for it,iv in inner_splits])
+        folds.append(fold)
+    model_metrics={kind:_classification_metrics(labels,prediction) for kind,prediction in predictions.items()}
+    lr=model_metrics['logistic_regression'];gb=model_metrics.get('lightgbm',{})
+    selected=choose_verifier(lr['auroc'],gb.get('auroc'),lr['tpr_at_5pct_fpr'],gb.get('tpr_at_5pct_fpr'))
+    views=_views(docs,seed)
+    fp.manifest['dataset_counts']['training_views']=len(views)
+    x,names=fp._comparison_rows(views,sorted(positive_ids))
+    estimator=_fit_comparison_estimator(selected,seed,x,views,positive_ids)
+    calibrator=fit_calibrator(margins[selected],labels,seed)
+    fp.verifier={'kind':selected,'estimator':estimator,'calibrator':calibrator,'feature_names':names}
+    fp.manifest['mode']='supervised';fp.evaluation['mode']='supervised'
+    thresholds=select_thresholds(labels,predictions[selected]*100)
+    fp.evaluation['thresholds']=thresholds
+    fp.manifest.update(match_threshold=thresholds['match_threshold'],mismatch_threshold=thresholds['mismatch_threshold'])
+    operating=performance_report(labels,predictions[selected],threshold=thresholds['match_threshold']/100,
+                                 mismatch_threshold=None if thresholds['mismatch_threshold'] is None else thresholds['mismatch_threshold']/100)
+    model_metrics[selected].update(operating)
+    held_out=[]
+    view_counts=Counter(root_id(d) for d in views)
+    for index,doc in enumerate(docs):
+        score=float(predictions[selected][index]*100)
+        held_out.append({'document_id':root_id(doc),'root_document_id':root_id(doc),'label':int(labels[index]),
+                         'score':score/100,'compatibility_score':score,'raw_margin':float(margins[selected][index]),
+                         'author':doc.author,'author_id':_author_key(doc),'source_url':(doc.metadata or {}).get('source_url'),
+                         'genre':(doc.metadata or {}).get('genre','unknown'),'source':(doc.metadata or {}).get('genre','unknown'),
+                         'split':'development','word_count':word_count(doc.clean_text),'view_count':view_counts[root_id(doc)],
+                         'embedding_score':float(components[index,0]),'stylometry_score':float(components[index,1]),'character_score':float(components[index,2]),
+                         'decision':decision_for_score(score,thresholds['match_threshold'],thresholds['mismatch_threshold'])})
+    per_author={}
+    for author in sorted(known_authors):
+        rows=[row for row in held_out if not row['label'] and row['author_id']==author]
+        scores=[row['compatibility_score'] for row in rows]
+        per_author[author]={'documents':len(rows),'mean_compatibility':float(np.mean(scores)),
+                            'median_compatibility':float(np.median(scores)),'maximum_compatibility':max(scores),
+                            'false_acceptance_rate':float(np.mean([row['decision']=='MATCH' for row in rows]))}
+    fp.evaluation['negative_diagnostics']=[{'role':'development','author_id':row['author_id'],
+                                           'root_document_id':row['root_document_id'],'source':row['source'],'word_count':row['word_count'],
+                                           'score':row['compatibility_score'],'raw_margin':row['raw_margin'],
+                                           'embedding':row['embedding_score'],'stylometry':row['stylometry_score'],'character':row['character_score'],
+                                           'decision':row['decision']} for row in held_out if not row['label']]
+    importance=abs(estimator[-1].coef_[0]).tolist() if selected=='logistic_regression' else estimator.feature_importances_.astype(float).tolist()
+    train_root_margins=_root_margins(docs,views,_margin(estimator,selected,x))
+    train_scores=calibrator.predict_proba(train_root_margins.reshape(-1,1))[:,1]
+    genres=defaultdict(list)
+    for index,doc in enumerate(docs):
+        if labels[index]:
+            genres[(doc.metadata or {}).get('genre','unknown')].append(index)
+    fp.evaluation['supervised']={'models':model_metrics,'selected_model':selected,'metrics':model_metrics[selected],
+        'nested_selection_metrics':performance_report(labels,nested_predictions,threshold=thresholds['match_threshold']/100, mismatch_threshold=None if thresholds['mismatch_threshold'] is None else thresholds['mismatch_threshold']/100),
+        'training_performance':performance_report(labels,train_scores,threshold=thresholds['match_threshold']/100, mismatch_threshold=None if thresholds['mismatch_threshold'] is None else thresholds['mismatch_threshold']/100),
+        'cv_method':'Nested stratified root/author cross-validation; root median margins and calibration restricted to outer training folds',
+        'calibration_enabled':True,'calibration_class_prior':'equal class mass, one OOF observation per independent root',
+        'positive_genre_weighting':'equal root document weight across positive sources','negative_grouping':fp.manifest['negative_grouping'],
+        'folds':folds,'selection_margin_auroc':.02,'feature_importance':dict(zip(names,importance)),
+        'held_out_scores':held_out,'per_positive_genre':{genre:{'documents':len(indices),
+            'mean_compatibility':float(np.mean(predictions[selected][indices])*100),
+            'accept_rate_at_match_threshold':float(np.mean(predictions[selected][indices]*100>=thresholds['match_threshold']))} for genre,indices in genres.items()},
+        'negative_author_counts':{author:sum(_author_key(d)==author for d in negatives) for author in sorted(known_authors)},
+        'per_negative_author':per_author,'independent_documents':len(docs),'generated_training_views':len(views),
+        'limitations':['Model selection and reported metrics share grouped development validation; these are exploratory, not an independent final test.',
+                       'Calibration uses root-level out-of-fold margins; no in-sample substitution is permitted.']}

@@ -2,7 +2,7 @@
 from dataclasses import dataclass
 
 VERSION = '0.1.0'
-FEATURE_SCHEMA_VERSION = '1'
+FEATURE_SCHEMA_VERSION = '2'
 PREPROCESSING_VERSION = '2'
 ENCODING_VERSION = 'singleton-episode-full-passage-v1'
 WEIGHTS = {'authorship_embedding': .60, 'stylometry': .25, 'char_ngram': .15}

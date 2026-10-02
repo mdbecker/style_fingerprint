@@ -26,10 +26,10 @@ def document_groups(documents):
         a,b=find(a),find(b);parents[max(a,b)]=min(a,b)
     seen={}
     for d in docs:
-        keys=['body:'+ ' '.join(d.clean_text.split())]
+        keys=['root:' + d.root_document_id, 'body:'+ ' '.join(d.clean_text.split())]
         keys+=['paragraph:'+' '.join(p.split()) for p in d.clean_text.split('\n\n') if word_count(p)>=20]
         if not label(d):
-            author=str((d.metadata or {}).get('author_id') or d.author or '').strip().casefold()
+            author=str(d.author_id or '').strip().casefold()
             if author: keys.append('author:'+author)
         for key in keys:
             if key in seen: union(d.document_id,seen[key])

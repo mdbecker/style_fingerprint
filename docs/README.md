@@ -4,7 +4,7 @@
 
 - [Implementation](implementation.md): algorithms, score math, persistence, and failure behavior.
 - [Corpus handling](corpus.md): pooled positive sources, cleaning, provenance, and local privacy.
-- [Evaluation](evaluation.md): seeded mixed holdout, nested group validation, report generation, and limitations.
+- [Evaluation](evaluation.md): grouped root/author validation, frozen thresholds, historical and sealed holdouts, production refitting, and report diagnostics.
 - [Negative collection and licensing](negative-corpus.md): curated sources, extraction, and reuse terms.
 - [Negative inventory](negative-inventory.md) and [curated source inputs](negative_sources.json): maintained public attribution and collection provenance.
 - [Development](development.md): concise verification and current limitations.

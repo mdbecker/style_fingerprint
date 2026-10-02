@@ -138,11 +138,11 @@ def test_given_work_positives_and_real_negative_authors_when_trained_then_genre_
         (negative / f'{i}.md').write_text(f'---\nauthor: Other {i % 3}\nauthor_id: other-{i % 3}\n---\nTechnical procedure {i} demonstrates that numerical experiments require careful measurement. The resulting approximation varies across input distributions.')
     fp = StyleFingerprint.build(corpus, tmp_path / 'out', holdout_fraction=0)
     supervised = fp.evaluation['supervised']
-    assert supervised['positive_genre_weighting'] == 'equal document weight across positive sources'
+    assert supervised['positive_genre_weighting'] == 'equal root document weight across positive sources'
     genres = supervised['per_positive_genre']
     assert genres['blog']['documents'] == 6
     assert genres['work_email']['documents'] == 3
-    assert 0 <= genres['work_email']['accept_rate_at_50'] <= 1
+    assert 0 <= genres['work_email']['accept_rate_at_match_threshold'] <= 1
     heldout = supervised['held_out_scores']
     assert sum(row.get('genre') == 'work_email' and row['label'] == 1 for row in heldout) == 3
     for fold in supervised['folds']:

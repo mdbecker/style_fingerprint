@@ -54,7 +54,7 @@ def test_given_invalid_source_or_existing_changed_sample_when_collected_then_no_
     assert path.read_text() == 'User edit'
 
 
-def test_given_alias_names_with_same_author_id_when_supervised_then_one_author_group(corpus, encoder, tmp_path):
+def test_given_alias_names_with_same_author_id_when_built_then_insufficient_author_diversity(corpus, encoder, tmp_path):
     from style_fingerprint import StyleFingerprint
     from test_supervised import negatives
     root = tmp_path / 'negative_posts'
@@ -62,9 +62,9 @@ def test_given_alias_names_with_same_author_id_when_supervised_then_one_author_g
     for i, path in enumerate(sorted(root.glob('*.md'))):
         path.write_text(path.read_text().replace('---\n', '---\nauthor_id: same-person\n', 1).replace('author: Other', f'author: Alias {i} Other'))
     fp = StyleFingerprint.build(corpus, tmp_path / 'artifacts', holdout_fraction=0)
-    assert fp.manifest['mode'] == 'supervised'
-    assert fp.manifest['negative_grouping'] == 'document'
-    assert fp.evaluation['supervised']['negative_author_counts'] == {'same-person': 10}
+    assert fp.manifest['mode'] == 'reference_similarity'
+    assert fp.verifier is None
+    assert {d.author_id for d in fp.documents if d.document_id.startswith('negative/')} == {'same-person'}
 
 
 def test_given_attributed_negatives_when_evaluated_then_author_holdouts_and_sources_are_auditable(corpus, encoder, tmp_path):

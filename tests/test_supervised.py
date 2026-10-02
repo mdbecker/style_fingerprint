@@ -30,15 +30,15 @@ def test_given_negative_documents_when_built_then_threshold_controls_mode(corpus
         assert result.diagnostics['contributions']
 
 
-def test_given_one_known_negative_author_when_built_then_document_holdouts_allow_supervision(corpus, encoder, tmp_path):
+def test_given_one_known_negative_author_when_built_then_supervision_is_disabled(corpus, encoder, tmp_path):
     from style_fingerprint import StyleFingerprint
     root = tmp_path / 'negative_posts'
     negatives(root, 10)
     for p in root.glob('*.md'):
         p.write_text(p.read_text().replace('Other 1','Other 0').replace('Other 2','Other 0'))
     fp = StyleFingerprint.build(corpus, tmp_path / 'artifacts', holdout_fraction=0)
-    assert fp.manifest['mode'] == 'supervised'
-    assert fp.manifest['negative_grouping'] == 'document'
+    assert fp.manifest['mode'] == 'reference_similarity'
+    assert fp.verifier is None
 
 
 def test_given_ensemble_metrics_when_selecting_then_boosting_requires_real_margin():

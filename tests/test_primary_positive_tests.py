@@ -56,8 +56,8 @@ def test_given_primary_tests_and_negatives_when_selected_then_only_development_r
     assert primary['positive_only'] is True
     assert primary['selected_model'] == supervised['selected_model']
     assert 'auroc' not in primary and 'false_positive_rate' not in primary
-    assert primary['accepted_at_50'] == sum(row['accepted_at_50'] for row in primary['documents'])
-    assert primary['acceptance_rate_at_50'] == pytest.approx(primary['accepted_at_50']/3)
+    assert primary['accepted_at_match_threshold'] == sum(row['decision'] == 'MATCH' for row in primary['documents'])
+    assert primary['acceptance_rate_at_match_threshold'] == pytest.approx(primary['accepted_at_match_threshold']/3)
     assert all(0 <= r['score'] <= 100 and r['evidence_strength'] for r in primary['documents'])
     before = fp.verifier['calibrator'].coef_.copy()
     import joblib

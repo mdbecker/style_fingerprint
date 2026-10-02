@@ -54,11 +54,14 @@ def add_explanations(fp, result, clean, passages, embeddings, reference, raw_str
 def add_analogues(fp, result, passages, embeddings, reference):
     similarities = cosine_matrix(embeddings, reference['embeddings'])
     docs = {d.document_id: d for d in fp.documents}
-    for i, passage in enumerate(passages):
-        for j in np.argsort(-similarities[i], kind='stable')[:3]:
-            historical = fp.passages[reference['indices'][int(j)]]
-            result.nearest_reference_passages.append({
-                'candidate_passage_id': passage.passage_id, 'document_id': historical.document_id,
-                'source_file': docs[historical.document_id].source_file, 'passage_id': historical.passage_id,
-                'start_char': historical.start_char, 'end_char': historical.end_char,
-                'similarity': float(similarities[i,j]), 'excerpt': historical.text[:500]})
+    best_candidates = np.argmax(similarities, axis=0)
+    ranked = np.argsort(-similarities.max(axis=0), kind='stable')[:3]
+    for j in ranked:
+        i = int(best_candidates[j])
+        passage = passages[i]
+        historical = fp.passages[reference['indices'][int(j)]]
+        result.nearest_reference_passages.append({
+            'candidate_passage_id': passage.passage_id, 'document_id': historical.document_id,
+            'source_file': docs[historical.document_id].source_file, 'passage_id': historical.passage_id,
+            'start_char': historical.start_char, 'end_char': historical.end_char,
+            'similarity': float(similarities[i,j]), 'excerpt': historical.text[:500]})

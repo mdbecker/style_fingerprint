@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import sys
 from pathlib import Path
 import numpy as np
 from .config import ENCODING_VERSION, PREPROCESSING_VERSION
@@ -24,6 +25,13 @@ def symmetric_maxsim(a, b):
     return float((sim.max(axis=1).mean() + sim.max(axis=0).mean()) / 2)
 
 
+def configure_inference_threads(device):
+    """Avoid macOS OpenMP worker crashes when encoder and challenger share a process."""
+    if device == 'cpu' and sys.platform == 'darwin':
+        import torch
+        torch.set_num_threads(1)
+
+
 class AuthorshipEncoder:
     def __init__(self, config):
         self.config = config
@@ -39,6 +47,7 @@ class AuthorshipEncoder:
             device = self.config.device
             if device == 'auto':
                 device = 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
+            configure_inference_threads(device)
             snapshot = snapshot_download(self.config.model_id, revision=self.config.model_revision,
                                          cache_dir=self.config.model_cache, local_files_only=self.config.local_files_only)
             self.model = AutoModel.from_pretrained(snapshot, trust_remote_code=True, local_files_only=True).to(device).eval()

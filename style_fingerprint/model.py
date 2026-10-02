@@ -64,6 +64,9 @@ class StyleScore:
     nearest_reference_passages: list = field(default_factory=list)
     best_matching_documents: list = field(default_factory=list)
     diagnostics: dict = field(default_factory=dict)
+    decision: str = "INCONCLUSIVE_OR_MISMATCH"
+    match_threshold: float | None = None
+    mismatch_threshold: float | None = None
 
     def to_dict(self):
         return asdict(self)
@@ -84,7 +87,27 @@ class StyleFingerprint:
         self._document_features = self.manifest.get('document_features') or {d.document_id: extract_features(d.clean_text, _document_structure(d)) for d in documents}
 
     @classmethod
-    def build(cls, corpus_dir='blog_posts', artifact_dir='artifacts', *, config=None, negative_dir=None, work_dir=None, gmail_dir=None, primary_test_dir=None, holdout_fraction=.2):
+    def build(cls, corpus_dir='blog_posts', artifact_dir='artifacts', *, config=None, negative_dir=None, work_dir=None, gmail_dir=None, primary_test_dir=None, holdout_fraction=.2, build_mode='evaluation', holdout_manifest=None, include_historical_holdout=True):
+        if build_mode not in {'evaluation', 'production'}:
+            raise ValueError('Build mode must be evaluation or production')
+        artifact_dir = Path(artifact_dir)
+        frozen = None
+        frozen_evaluation = None
+        prior_frozen = json.loads((artifact_dir / 'evaluation_config.json').read_text()) if (artifact_dir / 'evaluation_config.json').exists() else {}
+        if build_mode == 'production':
+            if not (artifact_dir / 'evaluation_config.json').exists():
+                cls.build(corpus_dir, artifact_dir, config=config, negative_dir=negative_dir,
+                          work_dir=work_dir, gmail_dir=gmail_dir, primary_test_dir=primary_test_dir,
+                          holdout_fraction=holdout_fraction, holdout_manifest=holdout_manifest,
+                          build_mode='evaluation')
+            frozen = json.loads((artifact_dir / 'evaluation_config.json').read_text())
+            frozen_evaluation = json.loads((artifact_dir / 'evaluation.json').read_text())
+            config = config or Config(**frozen['configuration'])
+            if (config.seed != frozen['random_seed'] or config.model_revision != frozen['encoder_revision']
+                    or config.model_id != frozen['encoder_model'] or frozen['feature_schema_version'] != FEATURE_SCHEMA_VERSION
+                    or frozen.get('view_generation_version') != 'paragraph-views-v1'
+                    or frozen.get('segmentation') != {'minimum': 300, 'preferred_min': 350, 'preferred_max': 600, 'maximum': 700, 'max_views': 6}):
+                raise ValueError('Production settings differ from frozen evaluation configuration; run evaluate first')
         config = config or Config()
         documents = load_corpus(corpus_dir)
         for doc in documents:
@@ -101,10 +124,37 @@ class StyleFingerprint:
         negatives = load_corpus(negative_root) if negative_root.exists() and any(p.suffix.lower() in {'.md','.markdown','.mdown'} for p in negative_root.rglob('*')) else []
         for d in negatives:
             d.document_id = 'negative/' + d.document_id
+            d.root_document_id = d.document_id
             d.metadata = dict(d.metadata or {}, genre='negative_posts')
+        sealed_ids = set(prior_frozen.get('sealed_holdout_ids', []))
+        newly_sealed = set()
+        if holdout_manifest is not None:
+            sealed = json.loads(Path(holdout_manifest).read_text())
+            newly_sealed = set(sealed.get('holdout_v2', sealed.get('document_ids', [])))
+            if build_mode == 'production' and not newly_sealed <= set(frozen.get('sealed_holdout_ids', [])):
+                raise ValueError('New sealed holdout designations require evaluation before production build')
+            sealed_ids.update(newly_sealed)
+        available = documents + negatives
+        unknown = newly_sealed - {d.document_id for d in available}
+        if unknown:
+            raise ValueError('Sealed holdout manifest refers to unavailable documents')
+        # Exclude connected duplicates and known negative authors as well as designated roots.
+        if sealed_ids:
+            from .holdout import document_groups
+            groups = document_groups(available)
+            sealed_groups = {groups[i] for i in sealed_ids if i in groups}
+            sealed_ids.update(i for i, group in groups.items() if group in sealed_groups)
+        documents = [d for d in documents if d.document_id not in sealed_ids]
+        negatives = [d for d in negatives if d.document_id not in sealed_ids]
         holdout_documents = []
         holdout_split = None
-        if holdout_fraction:
+        if build_mode == 'production':
+            holdout_split = frozen.get('holdout_split')
+            if not include_historical_holdout and holdout_split:
+                excluded = set(holdout_split['holdout_document_ids'])
+                documents = [d for d in documents if d.document_id not in excluded]
+                negatives = [d for d in negatives if d.document_id not in excluded]
+        elif holdout_fraction:
             if primary_test_dir is not None:
                 raise ValueError('Use seeded holdout or legacy primary_test_dir with holdout_fraction=0, not both.')
             development, holdout_documents, holdout_split = split_holdout(documents + negatives, config.seed, holdout_fraction)
@@ -115,17 +165,35 @@ class StyleFingerprint:
         primary_tests = load_corpus(primary_root) if not holdout_fraction and (primary_test_dir is not None or primary_root.exists()) else []
         for doc in primary_tests:
             doc.document_id = 'primary_test/' + doc.document_id
+            doc.root_document_id = doc.document_id
             doc.metadata = dict(doc.metadata or {}, genre='blog', role='primary_positive_test')
         _reject_primary_overlap(all_docs, primary_tests)
-        passages = [p for d in all_docs for p in chunk_text(d.clean_text, d.document_id)]
+        passages = [p for d in all_docs for p in chunk_text(d.clean_text, d.document_id, root_document_id=d.root_document_id, author_id=d.author_id)]
         artifact_dir = Path(artifact_dir)
         old_cache = {}
         if (artifact_dir / 'manifest.json').exists():
             try:
-                old = cls.load(artifact_dir)
-                old_cache = old._embedding_cache
+                # Encoder cache compatibility is independent of the verifier feature schema.
+                old_manifest = json.loads((artifact_dir / 'manifest.json').read_text())
+                compatible = (old_manifest['model_id'] == config.model_id
+                              and old_manifest['model_revision'] == config.model_revision
+                              and old_manifest['preprocessing_version'] == PREPROCESSING_VERSION
+                              and old_manifest['encoding_version'] == ENCODING_VERSION)
+                if compatible:
+                    for name in ['passages.parquet', 'embeddings.npy']:
+                        expected = old_manifest.get('artifact_hashes', {}).get(name)
+                        if expected is None or hashlib.sha256((artifact_dir / name).read_bytes()).hexdigest() != expected:
+                            raise ValueError('Incompatible encoder cache')
+                    frame = pd.read_parquet(artifact_dir / 'passages.parquet')
+                    cached = np.load(artifact_dir / 'embeddings.npy', allow_pickle=False)
+                    cached_keys = [cache_key(text, config) for text in frame['text']]
+                    if (cached.ndim != 2 or len(cached) != len(frame) or not np.isfinite(cached).all()
+                            or np.any(np.linalg.norm(cached, axis=1) == 0)
+                            or list(frame['embedding_key']) != cached_keys):
+                        raise ValueError('Corrupt encoder cache')
+                    old_cache = dict(zip(cached_keys, cached))
             except (ValueError, OSError, KeyError):
-                pass  # An incompatible artifact is rebuilt, never used for scoring.
+                pass  # An incompatible cache is rebuilt, never used for scoring.
         keys = [cache_key(p.text, config) for p in passages]
         missing = dict((key, p.text) for key, p in zip(keys, passages) if key not in old_cache)
         encoder = AuthorshipEncoder(config)
@@ -156,7 +224,11 @@ class StyleFingerprint:
                     'model_id': config.model_id, 'model_revision': config.model_revision,
                     'configuration': asdict(config), 'random_seed': config.seed,
                     'build_timestamp': datetime.now(timezone.utc).isoformat(),
+                    'build_mode': build_mode, 'sealed_holdout_ids': sorted(sealed_ids),
+                    'view_generation_version': 'paragraph-views-v1',
+                    'view_size_configuration': {'minimum': 300, 'preferred_min': 350, 'preferred_max': 600, 'maximum': 700, 'max_views': 6},
                     'corpus_hashes': {d.source_file: d.file_hash for d in all_docs},
+                    'negative_source_directory': str(negative_root.resolve()) if negatives else None,
                     'source_directory': str(Path(corpus_dir).resolve()), 'mode': 'reference_similarity',
                     'work_source_directory': str(work_root.resolve()) if 'work_email' in genre_counts else None,
                     'gmail_source_directory': str(gmail_root.resolve()) if 'gmail_email' in genre_counts else None,
@@ -182,169 +254,100 @@ class StyleFingerprint:
                                                'total_positive_documents': len(documents) + sum(document_label(d) for d in holdout_documents)})
         fp = cls(all_docs, passages, embeddings, config, manifest)
         fp.encoder = encoder
-        fp.evaluation = fp._evaluate_reference()
-        # Supervised mode is attached only when independent negative data meets the threshold.
-        fp._build_supervised(negatives)
-        primary_report = fp._evaluate_primary_positive_tests()
-        if primary_report is not None:
-            fp.evaluation['primary_positive_tests'] = primary_report
-        if holdout_split:
-            fp.evaluation['holdout'] = fp._evaluate_holdout()
+        if build_mode == 'production':
+            fp.evaluation = frozen_evaluation
+            fp.manifest['evaluation_configuration'] = frozen
+            fp.manifest['evaluation_timestamp'] = frozen['evaluation_timestamp']
+            fp.manifest['evaluation_dataset_counts'] = frozen.get('evaluation_dataset_counts', {})
+            fp.manifest['production_build_timestamp'] = datetime.now(timezone.utc).isoformat()
+            fp._production_refit(frozen)
+        else:
+            fp.evaluation = fp._evaluate_reference()
+            fp._build_supervised(negatives)
+            primary_report = fp._evaluate_primary_positive_tests()
+            if primary_report is not None:
+                fp.evaluation['primary_positive_tests'] = primary_report
+            if holdout_split:
+                fp.evaluation['holdout'] = fp._evaluate_holdout()
+            fp._freeze_configuration()
         for message in fp.manifest['warnings']:
             warnings.warn(message, UserWarning, stacklevel=2)
         fp._save(artifact_dir)
         return fp
 
     def _build_supervised(self, negatives):
-        unique = {d.clean_text: d for d in negatives}
-        negative_docs = list(unique.values())
-        known_authors = {_author_key(d) for d in negative_docs if _author_key(d)}
-        adequate = len(negative_docs) >= 10
-        positives = [d for d in self.documents if d.document_id in self.manifest['historical_document_ids']]
-        positives = list({d.clean_text: d for d in positives}.values())
-        if not adequate or len(positives) < 6:
-            if negatives:
-                self.manifest['warnings'].append('Supervised mode requires 10 independent negatives and 6 independent positives for nested validation; using reference similarity.')
-            return
-        self.manifest['negative_grouping'] = 'author' if len(known_authors) >= 3 else 'document'
-        if len(known_authors) < 3:
-            self.manifest['warnings'].append('Few known negative authors: using document holdouts; results do not establish generalization to unseen authors.')
-        author_counts = {_author_key(d): sum(_author_key(other) == _author_key(d) for other in negative_docs) for d in negative_docs if _author_key(d)}
-        if author_counts and max(author_counts.values()) > len(negative_docs) / 2:
-            self.manifest['warnings'].append('One author dominates the negative corpus; overall metrics may hide poor generalization to other authors. Inspect per-author held-out results.')
-        from sklearn.linear_model import LogisticRegression
-        docs = positives + negative_docs
-        positive_ids = {d.document_id for d in positives}
-        kinds = ['logistic_regression']
-        try:
-            import lightgbm
-            kinds.append('lightgbm')
-        except (ImportError, OSError):
-            self.manifest['warnings'].append('LightGBM unavailable; install the supervised extra and its native OpenMP runtime to compare it with logistic regression.')
-        outer_splits = self._group_splits(docs, positive_ids)
-        labels = np.array([int(d.document_id in positive_ids) for d in docs])
-        predictions = {kind: np.zeros(len(docs)) for kind in kinds}
-        margins = {kind: np.zeros(len(docs)) for kind in kinds}
-        folds = []
-        nested_predictions = np.zeros(len(docs))
-        names = None
-        for train, test in outer_splits:
-            train_docs = [docs[i] for i in train]
-            ref_ids = [d.document_id for d in train_docs if d.document_id in positive_ids]
-            x_train, names = self._comparison_rows(train_docs, ref_ids)
-            x_test, _ = self._comparison_rows([docs[i] for i in test], ref_ids)
-            inner_splits = self._group_splits(train_docs, positive_ids)
-            inner_metrics = {}
-            for kind in kinds:
-                inner_margins = np.zeros(len(train_docs))
-                for inner_train, inner_test in inner_splits:
-                    inner_docs = [train_docs[i] for i in inner_train]
-                    inner_refs = [d.document_id for d in inner_docs if d.document_id in positive_ids]
-                    xi, _ = self._comparison_rows(inner_docs, inner_refs)
-                    xt, _ = self._comparison_rows([train_docs[i] for i in inner_test], inner_refs)
-                    estimator = _fit_comparison_estimator(kind, self.config.seed, xi, inner_docs, positive_ids)
-                    inner_margins[inner_test] = _margin(estimator, kind, xt)
-                from sklearn.metrics import roc_auc_score
-                inner_metrics[kind] = float(roc_auc_score(labels[train], inner_margins))
-                calibrator = fit_calibrator(inner_margins, labels[train], self.config.seed,
-                                            positive_genres=[(d.metadata or {}).get('genre', 'unknown') for d in train_docs])
-                estimator = _fit_comparison_estimator(kind, self.config.seed, x_train, train_docs, positive_ids)
-                margins[kind][test] = _margin(estimator, kind, x_test)
-                predictions[kind][test] = calibrator.predict_proba(margins[kind][test].reshape(-1,1))[:,1]
-            nested_kind = choose_verifier(inner_metrics['logistic_regression'], inner_metrics.get('lightgbm'))
-            nested_predictions[test] = predictions[nested_kind][test]
-            folds.append({'nested_selected_model': nested_kind,
-                          'selection_document_ids': [d.document_id for d in train_docs],
-                          'inner_selection_auroc': inner_metrics,
-                          'test_document_ids': [docs[i].document_id for i in test],
-                          'training_document_ids': [docs[i].document_id for i in train],
-                          'training_negative_author_ids': sorted({_author_key(docs[i]) for i in train if not labels[i] and _author_key(docs[i])}),
-                          'test_negative_author_ids': sorted({_author_key(docs[i]) for i in test if not labels[i] and _author_key(docs[i])}),
-                          'test_positive_ids': [docs[i].document_id for i in test if labels[i]],
-                          'reference_document_ids': ref_ids,
-                          'calibration_training_ids': [docs[i].document_id for i in train],
-                          'inner_folds': [{'training_document_ids': [train_docs[i].document_id for i in itrain],
-                                           'test_document_ids': [train_docs[i].document_id for i in itest],
-                                           'training_negative_author_ids': sorted({_author_key(train_docs[i]) for i in itrain if train_docs[i].document_id not in positive_ids and _author_key(train_docs[i])}),
-                                           'test_negative_author_ids': sorted({_author_key(train_docs[i]) for i in itest if train_docs[i].document_id not in positive_ids and _author_key(train_docs[i])}),
-                                           'reference_document_ids': [train_docs[i].document_id for i in itrain if train_docs[i].document_id in positive_ids]}
-                                          for itrain,itest in inner_splits]})
-        model_metrics = {kind: _classification_metrics(labels, prediction) for kind, prediction in predictions.items()}
-        selected = choose_verifier(model_metrics['logistic_regression']['auroc'], model_metrics.get('lightgbm', {}).get('auroc'))
-        x, names = self._comparison_rows(docs, list(positive_ids))
-        estimator = _fit_comparison_estimator(selected, self.config.seed, x, docs, positive_ids)
-        calibrator = fit_calibrator(margins[selected], labels, self.config.seed,
-                                    positive_genres=[(d.metadata or {}).get('genre', 'unknown') for d in docs])
-        if selected == 'logistic_regression':
-            importance = abs(estimator[-1].coef_[0]).tolist()
-        else:
-            importance = estimator.feature_importances_.astype(float).tolist()
-        self.verifier = {'kind': selected, 'estimator': estimator, 'calibrator': calibrator, 'feature_names': names}
-        self.manifest['mode'] = 'supervised'
-        self.evaluation['mode'] = 'supervised'
-        self.evaluation['supervised'] = {'models': model_metrics, 'selected_model': selected,
-                                        'nested_selection_metrics': performance_report(labels, nested_predictions),
-                                        'training_performance': performance_report(labels, calibrator.predict_proba(_margin(estimator, selected, x).reshape(-1,1))[:,1]),
-                                        'cv_method': 'Nested stratified group cross-validation; model choice and calibration restricted to outer training folds',
-                                        'calibration_enabled': True, 'calibration_class_prior': 'equal class mass, independent of author/fold sample counts',
-                                        'positive_genre_weighting': 'equal document weight across positive sources',
-                                        'negative_grouping': self.manifest['negative_grouping'],
-                                        'metrics': model_metrics[selected],
-                                        'folds': folds, 'selection_margin_auroc': .02,
-                                        'feature_importance': dict(zip(names, importance)),
-                                        'held_out_scores': [{'document_id': d.document_id, 'label': int(labels[i]), 'score': float(predictions[selected][i]),
-                                                             'author': d.author, 'author_id': _author_key(d), 'source_url': (d.metadata or {}).get('source_url'),
-                                                             'genre': (d.metadata or {}).get('genre', 'unknown')} for i,d in enumerate(docs)],
-                                        'per_positive_genre': {genre: {'documents': len(indices),
-                                                                       'mean_compatibility': float(np.mean(predictions[selected][indices]) * 100),
-                                                                       'accept_rate_at_50': float(np.mean(predictions[selected][indices] >= .5))}
-                                                               for genre, indices in _genre_indices(docs, positive_ids).items()},
-                                        'negative_author_counts': {author: sum(_author_key(d) == author for d in negative_docs) for author in sorted(known_authors)},
-                                        'per_negative_author': {author: {'documents': sum(_author_key(d) == author for d in negative_docs),
-                                                                         'mean_compatibility': float(np.mean([predictions[selected][i] * 100 for i,d in enumerate(docs) if not labels[i] and _author_key(d) == author])),
-                                                                         'false_accept_rate_at_50': float(np.mean([predictions[selected][i] >= .5 for i,d in enumerate(docs) if not labels[i] and _author_key(d) == author]))} for author in sorted(known_authors)},
-                                        'limitations': ['Model selection and reported metrics share grouped validation; these are exploratory, not an independent final test.',
-                                                        'Calibration uses out-of-fold margins, with inner calibration folds restricted to each outer training corpus.']}
+        from .evaluation import run_supervised
+        return run_supervised(self, negatives)
 
     def _group_splits(self, docs, positive_ids):
-        from sklearn.model_selection import StratifiedGroupKFold
-        labels = [int(d.document_id in positive_ids) for d in docs]
-        groups = [d.document_id if d.document_id in positive_ids or not _author_key(d) or self.manifest.get('negative_grouping') == 'document' else 'author:' + _author_key(d) for d in docs]
-        if self.manifest.get('holdout_split'):
-            mapping = self.manifest['holdout_split']['document_groups']
-            groups = [mapping[d.document_id] for d in docs]
-        positive_count = sum(labels)
-        negative_groups = len({g for g,y in zip(groups, labels) if not y})
-        positive_groups = len({g for g,y in zip(groups, labels) if y})
-        splits = min(3, positive_groups, negative_groups)
-        if splits < 2:
-            raise ValueError('Insufficient independent groups for supervised calibration')
-        splitter = StratifiedGroupKFold(n_splits=splits, shuffle=True, random_state=self.config.seed)
-        result = list(splitter.split(np.zeros(len(docs)), labels, groups))
-        if any(len(set(np.asarray(labels)[train])) < 2 or sum(np.asarray(labels)[train]) < 2 for train,_ in result):
-            # Two balanced document/author partitions preserve at least two positive reference documents.
-            positive = [i for i,y in enumerate(labels) if y]
-            ng = sorted({g for g,y in zip(groups,labels) if not y})
-            assignment = {g: i % 2 for i,g in enumerate(ng)}
-            buckets = [[], []]
-            pg = sorted({groups[i] for i in positive})
-            pa = {g: i % 2 for i,g in enumerate(pg)}
-            for i in positive:
-                buckets[pa[groups[i]]].append(i)
-            for i,y in enumerate(labels):
-                if not y:
-                    buckets[assignment[groups[i]]].append(i)
-            result = [(np.array(sorted(set(range(len(docs))) - set(test))), np.array(sorted(test))) for test in buckets]
-        return result
+        from .evaluation import group_splits
+        return group_splits(self, docs, positive_ids)
+
+    def _freeze_configuration(self):
+        stamp = datetime.now(timezone.utc).isoformat()
+        self.manifest['evaluation_timestamp'] = stamp
+        thresholds = self.evaluation.get('thresholds', {})
+        frozen = {'selected_model': self.verifier['kind'] if self.verifier else 'reference_similarity',
+                  'feature_schema_version': FEATURE_SCHEMA_VERSION,
+                  'selected_feature_schema': self.verifier['feature_names'] if self.verifier else [],
+                  'view_generation_version': self.manifest['view_generation_version'],
+                  'segmentation': self.manifest['view_size_configuration'],
+                  'random_seed': self.config.seed, 'encoder_revision': self.config.model_revision,
+                  'encoder_model': self.config.model_id, 'configuration': asdict(self.config),
+                  'calibration_method': 'root-oof-logistic' if self.verifier else 'reference_similarity',
+                  'match_threshold': thresholds.get('match_threshold'),
+                  'mismatch_threshold': thresholds.get('mismatch_threshold'),
+                  'evaluation_timestamp': stamp, 'holdout_split': self.manifest.get('holdout_split'),
+                  'sealed_holdout_ids': self.manifest.get('sealed_holdout_ids', []),
+                  'evaluation_dataset_counts': dict(self.manifest['dataset_counts'])}
+        if self.verifier:
+            cal = self.verifier['calibrator']
+            frozen['calibration_coefficients'] = cal.coef_.tolist()
+            frozen['calibration_intercept'] = cal.intercept_.tolist()
+        self.manifest['evaluation_configuration'] = frozen
+        self.manifest['evaluation_dataset_counts'] = dict(self.manifest['dataset_counts'])
+        self.manifest['model_type'] = frozen['selected_model']
+        self.manifest['calibration_type'] = frozen['calibration_method']
+        self.manifest.update({key: frozen[key] for key in ['match_threshold', 'mismatch_threshold']})
+
+    def _production_refit(self, frozen):
+        from .corpus import generate_training_views
+        from .evaluation import _fit_comparison_estimator, negative_eligibility
+        self.manifest['model_type'] = frozen['selected_model']
+        self.manifest['calibration_type'] = frozen['calibration_method']
+        self.manifest.update({key: frozen[key] for key in ['match_threshold', 'mismatch_threshold']})
+        if frozen['selected_model'] == 'reference_similarity':
+            return
+        positive_ids = set(self.manifest['historical_document_ids'])
+        roots = list({d.clean_text:d for d in self.documents}.values())
+        if not negative_eligibility([d.root_document_id for d in roots], [int(d.root_document_id in positive_ids) for d in roots], [d.author_id for d in roots]):
+            raise ValueError('Production negative corpus no longer meets supervised eligibility; run evaluation again')
+        from sklearn.linear_model import LogisticRegression
+        views = [view for doc in self.documents for view in generate_training_views(doc, seed=self.config.seed)]
+        positive_ids = set(self.manifest['historical_document_ids'])
+        x, names = self._comparison_rows(views, sorted(positive_ids))
+        if names != frozen['selected_feature_schema']:
+            raise ValueError('Frozen feature schema differs from production features')
+        estimator = _fit_comparison_estimator(frozen['selected_model'], self.config.seed, x, views, positive_ids)
+        calibrator = LogisticRegression()
+        calibrator.classes_ = np.array([0, 1])
+        calibrator.coef_ = np.asarray(frozen['calibration_coefficients'])
+        calibrator.intercept_ = np.asarray(frozen['calibration_intercept'])
+        calibrator.n_features_in_ = 1
+        self.verifier = {'kind': frozen['selected_model'], 'estimator': estimator,
+                         'calibrator': calibrator, 'feature_names': names}
+        self.manifest['mode'] = 'supervised'
+        self.manifest['dataset_counts']['training_views'] = len(views)
 
     def _comparison_rows(self, documents, reference_ids):
         rows = []
         names = None
         for doc in documents:
-            refs = [i for i in reference_ids if i != doc.document_id]
-            indices = [i for i,p in enumerate(self.passages) if p.document_id == doc.document_id]
-            passages = [self.passages[i] for i in indices]
-            signals, features, scores, reference = self._compare(doc.clean_text, _document_structure(doc), passages, self.embeddings[indices], refs, [p.text for p in passages])
+            root = doc.root_document_id
+            refs = [i for i in reference_ids if i != root]
+            passages = chunk_text(doc.clean_text, doc.document_id, root_document_id=root, author_id=doc.author_id)
+            embeddings = self._embed(passages)
+            signals, features, scores, reference = self._compare(doc.clean_text, _document_structure(doc), passages, embeddings, refs, [p.text for p in passages])
             vector = self._comparison_features(signals, features, scores, reference, word_count(doc.clean_text), len(passages))
             names = list(vector)
             rows.append(list(vector.values()))
@@ -357,7 +360,6 @@ class StyleFingerprint:
         vector.update({'embedding_mean': float(np.mean(scores)), 'embedding_std': float(np.std(scores)),
                        'embedding_min': min(scores), 'embedding_max': max(scores)})
         vector.update({f'embedding_p{p}': float(np.percentile(scores,p)) for p in [10,25,75,90]})
-        vector.update({'usable_words': float(words), 'candidate_passages': float(passages)})
         vector.update({f"deviation_{d['feature']}": float(np.clip(d['robust_z'], -10, 10)) for d in deviations(features, reference['features'])})
         return vector
 
@@ -399,11 +401,68 @@ class StyleFingerprint:
             joblib.dump(self.verifier, directory / 'verifier.joblib')
         elif (directory / 'verifier.joblib').exists():
             (directory / 'verifier.joblib').unlink()
-        from .report import write_html_report
-        write_html_report(self.evaluation, self.manifest, directory / 'report.html')
-        (directory / 'evaluation.json').write_text(json.dumps(self.evaluation, indent=2, allow_nan=False))
+        if self.manifest.get('build_mode') != 'production':
+            predictions = self._prediction_rows()
+            self.evaluation['negative_diagnostics'] = [
+                {'role': row['split'], 'author_id': row['author_id'], 'root_document_id': row['root_document_id'],
+                 'source': row['source'], 'word_count': row['word_count'], 'score': row['compatibility_score'],
+                 'raw_margin': row['raw_margin'], 'embedding': row['embedding_score'],
+                 'stylometry': row['stylometry_score'], 'character': row['character_score'], 'decision': row['decision']}
+                for row in predictions if row['label'] == 0]
+            from .report import write_html_report
+            write_html_report(self.evaluation, self.manifest, directory / 'report.html')
+            (directory / 'evaluation.json').write_text(json.dumps(self.evaluation, indent=2, allow_nan=False))
+            pd.DataFrame(predictions).to_parquet(directory / 'evaluation_predictions.parquet', index=False)
+        if self.manifest.get('evaluation_configuration'):
+            (directory / 'evaluation_config.json').write_text(json.dumps(self.manifest['evaluation_configuration'], indent=2, allow_nan=False))
         self.manifest['artifact_hashes'] = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in directory.iterdir() if p.name in {'passages.parquet','embeddings.npy','vectorizer.joblib','verifier.joblib','evaluation.json'}}
         (directory / 'manifest.json').write_text(json.dumps(self.manifest, indent=2, allow_nan=False))
+
+    def _prediction_rows(self):
+        """Whitelist root diagnostics; never serialize prose into evaluation tables."""
+        from .corpus import generate_training_views
+        keys = ['root_document_id','author_id','source','label','split','word_count','view_count',
+                'embedding_score','stylometry_score','character_score','raw_margin','compatibility_score','score','decision']
+        rows = []
+        development = self.evaluation.get('supervised', {}).get('held_out_scores', [])
+        if development:
+            for item in development:
+                row = {key: item.get(key) for key in keys}
+                row['score'] = item['compatibility_score']
+                rows.append(row)
+        else:
+            docs = {d.document_id:d for d in self.documents}
+            for fold in self.evaluation['folds']:
+                doc = docs[fold['candidate_document_id']]
+                comp = fold['raw_components']
+                rows.append(dict(root_document_id=doc.root_document_id, author_id=doc.author_id,
+                                 source=document_source(doc), label=1, split='development',
+                                 word_count=word_count(doc.clean_text), view_count=len(generate_training_views(doc, seed=self.config.seed)),
+                                 embedding_score=comp['authorship_embedding']*100, stylometry_score=comp['stylometry']*100,
+                                 character_score=comp['char_ngram']*100, raw_margin=fold['score']/100,
+                                 compatibility_score=fold['score'], score=fold['score'], decision='INCONCLUSIVE_OR_MISMATCH'))
+            for doc in self.documents:
+                if document_label(doc):
+                    continue
+                result = self.score(doc.raw_markdown, explain=False)
+                comp = result.diagnostics['raw_components']
+                rows.append(dict(root_document_id=doc.root_document_id, author_id=doc.author_id,
+                                 source=document_source(doc), label=0, split='development',
+                                 word_count=result.word_count, view_count=len(generate_training_views(doc, seed=self.config.seed)),
+                                 embedding_score=comp['authorship_embedding']*100, stylometry_score=comp['stylometry']*100,
+                                 character_score=comp['char_ngram']*100, raw_margin=result.raw_score,
+                                 compatibility_score=result.score, score=result.score, decision=result.decision))
+        held_docs = {d['document_id']:Document(**d) for d in self.manifest.get('holdout_documents', [])}
+        for item in self.evaluation.get('holdout', {}).get('documents', []):
+            doc = held_docs[item['document_id']]
+            comp = item['raw_component_scores']
+            rows.append(dict(root_document_id=doc.root_document_id, author_id=doc.author_id,
+                             source=item['source'], label=item['label'], split='holdout',
+                             word_count=item['usable_words'], view_count=len(generate_training_views(doc, seed=self.config.seed)),
+                             embedding_score=comp['authorship_embedding']*100, stylometry_score=comp['stylometry']*100,
+                             character_score=comp['char_ngram']*100, raw_margin=item['raw_margin'],
+                             compatibility_score=item['score'], score=item['score'], decision=item['decision']))
+        return [{key:row.get(key) for key in keys} for row in rows]
 
     @classmethod
     def load(cls, artifact_dir='artifacts'):
@@ -546,6 +605,8 @@ class StyleFingerprint:
         return result
 
     def evaluate(self):
+        if self.manifest.get('build_mode') == 'production':
+            raise ValueError('Run the evaluate CLI command to evaluate development inputs separately from the production fingerprint')
         self.evaluation = self._evaluate_reference()
         if self.verifier is not None:
             negatives = [d for d in self.documents if d.document_id not in self.manifest['historical_document_ids']]
@@ -556,6 +617,7 @@ class StyleFingerprint:
         if self.manifest.get('holdout_split'):
             self.evaluation['holdout'] = self._evaluate_holdout()
         self.manifest['warnings'] = list(dict.fromkeys(self.manifest['warnings']))
+        self._freeze_configuration()
         return self.evaluation
 
     def _evaluate_holdout(self):
@@ -566,13 +628,38 @@ class StyleFingerprint:
                                 input_format='email' if document_source(doc) in {'work_corpus','gmail_corpus'} else 'markdown')
             rows.append({'document_id': doc.document_id, 'source': document_source(doc),
                          'label': document_label(doc), 'score': result.score,
-                         'evidence_strength': result.evidence_strength, 'usable_words': result.word_count})
+                         'evidence_strength': result.evidence_strength, 'usable_words': result.word_count,
+                         'decision': result.decision, 'raw_margin': result.raw_score,
+                         'author_id': doc.author_id, 'root_document_id': doc.root_document_id,
+                         'component_scores': result.component_scores,
+                         'raw_component_scores': result.diagnostics['raw_components']})
+            if not document_label(doc):
+                self.evaluation.setdefault('negative_diagnostics', [])
+                diagnostic = {'role': 'holdout', 'author_id': doc.author_id, 'root_document_id': doc.root_document_id,
+                              'source': document_source(doc), 'word_count': result.word_count, 'score': result.score,
+                              'raw_margin': result.raw_score, 'decision': result.decision,
+                              'embedding': result.diagnostics['raw_components']['authorship_embedding']*100,
+                              'stylometry': result.diagnostics['raw_components']['stylometry']*100, 'character': result.diagnostics['raw_components']['char_ngram']*100}
+                old = self.evaluation['negative_diagnostics']
+                self.evaluation['negative_diagnostics'] = [r for r in old if not (r['root_document_id'] == doc.root_document_id and r['role'] == 'holdout')] + [diagnostic]
         def summarize(items):
-            metrics = performance_report([r['label'] for r in items], [r['score']/100 for r in items])
+            threshold = self.manifest.get('match_threshold')
+            labels = [r['label'] for r in items]
+            scores = [r['score']/100 for r in items]
+            if threshold is None:
+                metrics = {'accuracy': None, 'true_positive_rate': None, 'false_positive_rate': None,
+                           'match_threshold': None, 'mismatch_threshold': None, 'inconclusive_rate': 1.,
+                           'confusion_matrix': {key: None for key in ['true_positive','true_negative','false_positive','false_negative']}}
+                if len(set(labels)) == 2:
+                    metrics.update(_classification_metrics(labels, scores))
+            else:
+                mismatch = self.manifest.get('mismatch_threshold')
+                metrics = performance_report(labels, scores, threshold=threshold/100,
+                                             mismatch_threshold=mismatch/100 if mismatch is not None else None)
             return {'count': len(items), 'metrics': metrics}
         return dict(summarize(rows), documents=rows,
                     by_source={src: summarize([r for r in rows if r['source']==src]) for src in sorted({r['source'] for r in rows})},
-                    threshold=50, threshold_policy='Fixed cutoff; never tuned on holdout',
+                    threshold=self.manifest.get('match_threshold'), threshold_policy='Frozen grouped development OOF threshold',
                     limitations=['Previously exposed project documents; prospective holdout, not historically untouched.',
                                  'Small source subsets and genre/topic confounding limit generalization.'])
 
@@ -587,13 +674,13 @@ class StyleFingerprint:
             rows.append({'document_id': doc.document_id, 'source_file': doc.source_file,
                          'file_hash': doc.file_hash, 'title': (doc.metadata or {}).get('title'),
                          'score': result.score, 'evidence_strength': result.evidence_strength,
-                         'usable_words': result.word_count, 'accepted_at_50': result.score >= 50,
+                         'usable_words': result.word_count, 'decision': result.decision,
                          'component_scores': result.component_scores})
-        accepted = sum(row['accepted_at_50'] for row in rows)
+        accepted = sum(row['decision'] == 'MATCH' for row in rows)
         return {'count': len(rows), 'positive_only': True,
                 'selected_model': self.verifier['kind'] if self.verifier is not None else 'reference_similarity',
-                'threshold': 50, 'threshold_policy': 'fixed illustrative cutoff; not tuned on primary tests',
-                'accepted_at_50': accepted, 'acceptance_rate_at_50': accepted / len(rows),
+                'threshold': self.manifest.get('match_threshold'), 'threshold_policy': 'Frozen grouped development OOF threshold',
+                'accepted_at_match_threshold': accepted, 'acceptance_rate_at_match_threshold': accepted / len(rows),
                 'mean_compatibility': float(np.mean([row['score'] for row in rows])),
                 'documents': rows, 'reference_document_ids': self.manifest['historical_document_ids'],
                 'development_document_ids': [d.document_id for d in self.documents],
@@ -613,13 +700,31 @@ class StyleFingerprint:
         components = {k: normalize_similarity(v, self.evaluation['calibration'][k]) for k,v in signals.items()}
         ensemble = sum(WEIGHTS[k]*components[k] for k in WEIGHTS)
         result = StyleScore(100*ensemble, ensemble, evidence_strength(word_count(clean), list(components.values())),
-                            word_count(clean), {**components, 'ensemble': ensemble})
+                            word_count(clean), {**components, 'character': components['char_ngram'], 'ensemble': ensemble})
         attribution = None
         if self.verifier is not None:
-            calibrated, margin, attribution = self._supervised_score(signals, features, doc_scores, ref, word_count(clean), len(passages))
+            from .corpus import make_training_views
+            view_margins = []
+            view_components = []
+            view_contributions = []
+            for view in make_training_views(clean, 'candidate', seed=self.config.seed):
+                vp = chunk_text(view.clean_text, view.document_id, root_document_id='candidate')
+                vs, vf, vd, vr = self._compare(view.clean_text, view.clean_text, vp, self._embed(vp), self.manifest['historical_document_ids'])
+                _, vm, va = self._supervised_score(vs, vf, vd, vr, word_count(view.clean_text), len(vp))
+                view_margins.append(vm)
+                view_components.append(vs)
+                view_contributions.append(va)
+            signals = {key: float(np.median([vs[key] for vs in view_components])) for key in WEIGHTS}
+            margin = float(np.median(view_margins))
+            calibrated = float(self.verifier['calibrator'].predict_proba(np.array([[margin]]))[0, 1])
+            attribution = view_contributions[int(np.argmin(abs(np.asarray(view_margins) - margin)))]
             result.score = 100*calibrated
             result.raw_score = margin
             result.component_scores['ensemble'] = calibrated
+        from .evaluation import decision_for_score
+        result.match_threshold = self.manifest.get('match_threshold')
+        result.mismatch_threshold = self.manifest.get('mismatch_threshold')
+        result.decision = decision_for_score(result.score, result.match_threshold, result.mismatch_threshold) if result.match_threshold is not None else 'INCONCLUSIVE_OR_MISMATCH'
         result.feature_deviations = deviations(features, ref['features'])
         result.best_matching_documents = [{'document_id': d, 'similarity': v} for d,v in sorted(doc_scores.items(), key=lambda item: -item[1])]
         notices = list(self.manifest['warnings'])
@@ -631,6 +736,7 @@ class StyleFingerprint:
                               'passage_count': len(passages), 'sentence_deletions_evaluated': 0,
                               'contributions': {k: 100*WEIGHTS[k]*components[k] for k in WEIGHTS}}
         if attribution is not None:
+            result.diagnostics['view_margin_summary'] = {key: float(value) for key, value in zip(['minimum','p25','median','p75','maximum','variance'], [min(view_margins),np.percentile(view_margins,25),margin,np.percentile(view_margins,75),max(view_margins),np.var(view_margins)])}
             result.diagnostics['contributions'] = attribution
             result.diagnostics['contribution_units'] = 'Uncalibrated verifier margin (signed standardized coefficients or TreeSHAP).'
         from .explain import add_analogues
@@ -641,76 +747,5 @@ class StyleFingerprint:
         return result
 
 
-def choose_verifier(logistic_auc, lightgbm_auc):
-    return 'lightgbm' if lightgbm_auc is not None and lightgbm_auc - logistic_auc >= .02 - 1e-12 else 'logistic_regression'
-
-
-def _classification_metrics(labels, scores):
-    from sklearn.metrics import roc_auc_score, average_precision_score, roc_curve, brier_score_loss
-    labels, scores = np.asarray(labels), np.asarray(scores)
-    fpr, tpr, _ = roc_curve(labels, scores)
-    eer_index = int(np.argmin(abs(fpr - (1-tpr))))
-    ece = 0.
-    for low in np.linspace(0, .9, 10):
-        mask = (scores >= low) & (scores < low+.1 if low < .9 else scores <= 1)
-        if mask.any():
-            ece += mask.mean() * abs(labels[mask].mean() - scores[mask].mean())
-    return {'auroc': float(roc_auc_score(labels, scores)),
-            'average_precision': float(average_precision_score(labels, scores)),
-            'eer': float((fpr[eer_index] + 1-tpr[eer_index]) / 2),
-            'tpr_at_1pct_fpr': float(max(tpr[fpr <= .01], default=0)),
-            'tpr_at_5pct_fpr': float(max(tpr[fpr <= .05], default=0)),
-            'brier': float(brier_score_loss(labels, scores)), 'calibration_error': float(ece)}
-
-
-def _estimator(kind, seed):
-    from sklearn.pipeline import make_pipeline
-    from sklearn.preprocessing import StandardScaler
-    from sklearn.linear_model import LogisticRegression
-    if kind == 'logistic_regression':
-        return make_pipeline(StandardScaler(), LogisticRegression(C=.1, max_iter=2000, random_state=seed, class_weight='balanced'))
-    from lightgbm import LGBMClassifier
-    return LGBMClassifier(n_estimators=50, num_leaves=7, max_depth=3, min_child_samples=2,
-                          learning_rate=.05, random_state=seed, n_jobs=1, verbosity=-1, deterministic=True, force_col_wise=True)
-
-
-def _margin(estimator, kind, x):
-    if kind == 'logistic_regression':
-        return np.asarray(estimator.decision_function(x))
-    return np.asarray(estimator.predict(x, raw_score=True))
-
-
-def _author_key(document):
-    metadata = document.metadata or {}
-    return str(metadata.get('author_id') or document.author or '').strip().casefold()
-
-
-def _fit_comparison_estimator(kind, seed, x, documents, positive_ids):
-    labels = [int(d.document_id in positive_ids) for d in documents]
-    return _estimator(kind, seed).fit(x, labels)
-
-
-def fit_calibrator(margins, labels, seed, positive_genres=None):
-    from sklearn.linear_model import LogisticRegression
-    labels = np.asarray(labels)
-    if set(labels) != {0,1}:
-        raise ValueError('Calibration needs both positive and negative validation examples')
-    weights = np.array([1 / np.sum(labels == y) for y in labels])
-    if positive_genres is not None:
-        if len(positive_genres) != len(labels):
-            raise ValueError('Calibration genre labels must match the example count')
-        # Legacy metadata argument is accepted, but sources no longer affect weights.
-    return LogisticRegression(C=1, random_state=seed, tol=1e-10, max_iter=2000).fit(np.asarray(margins).reshape(-1,1), labels, sample_weight=weights)
-
-
-def performance_report(labels, scores):
-    labels=np.asarray(labels,dtype=int);scores=np.asarray(scores,dtype=float)
-    predicted=scores>=.5
-    tp=int(np.sum(predicted & (labels==1)));tn=int(np.sum(~predicted & (labels==0)))
-    fp=int(np.sum(predicted & (labels==0)));fn=int(np.sum(~predicted & (labels==1)))
-    result={'accuracy':float((tp+tn)/len(labels)) if len(labels) else None,
-            'true_positive_rate':tp/(tp+fn) if tp+fn else None,
-            'false_positive_rate':fp/(fp+tn) if fp+tn else None,
-            'confusion_matrix':{'true_positive':tp,'true_negative':tn,'false_positive':fp,'false_negative':fn}}
-    if len(set(labels))==2: result.update(_classification_metrics(labels,scores))
-    return result
+# Compatibility imports for the existing public Python API.
+from .evaluation import choose_verifier, _classification_metrics, _estimator, _margin, _author_key, _fit_comparison_estimator, fit_calibrator, performance_report
