@@ -1,18 +1,10 @@
 # Reproducible mixed-class holdout and evaluation report
 
-This policy supersedes the previous manually reserved, positive-only blog test directory. All six unchanged blog originals are again under `blog_posts/`; both email directories and `negative_posts/` remain unchanged. Source directories are inventories, not role assignments. A seeded split assigns whole documents to development or final holdout before any fitted preprocessing or model training.
+This policy supersedes the previous manually reserved, positive-only blog test directory. Original inputs remain unchanged in their configured source directories. Source directories are inventories, not role assignments. A seeded split assigns whole documents to development or final holdout before any fitted preprocessing or model training.
 
-## Current split
+## Split policy
 
-| Source | Available | Development | Independent holdout |
-|---|---:|---:|---:|
-| blog | 6 | 3 | 3 |
-| work_corpus | 45 | 36 | 9 |
-| gmail_corpus | 18 | 14 | 4 |
-| negative_posts | 100 | 80 | 20 |
-| **Total** | **169** | **133** | **36** |
-
-Development has 53 positives and 80 negatives; the holdout has 16 positives and 20 negatives. All positive sources still form one class with equal document weights. The holdout always targets at least half the blog inventory, rounded up, and at least three blogs when three are available (three of the current six); other sources target 20%, rounded up. Source-stratum coverage includes both email sources and negatives, so the final evaluation can report their differences.
+Positive sources form one class with equal document weights. The holdout targets at least half the blog inventory, rounded up, and at least three blogs when available. Other positive sources and negatives target 20%, rounded up. Coverage includes both classes and each available source so final evaluation can reveal source differences. Exact totals are computed during builds and appear only in generated artifacts.
 
 ## Determinism and group isolation
 
@@ -62,7 +54,7 @@ The standalone report uses no remote assets or scripts and opens directly in a b
 - **Training fit:** accuracy, AUROC, average precision and Brier error on fitted development examples; explicitly optimistic.
 - **Development cross-validation:** nested outer test predictions, with per-fold model selection and calibration confined to training groups.
 - **Independent holdout:** AUROC, average precision, accuracy, positive acceptance, negative acceptance, Brier error, and confusion counts at fixed cutoff 50.
-- **Holdout by source:** count, accuracy, positive acceptance for blog/work/Gmail, and negative acceptance (false acceptance) for negative_posts. AUROC is unavailable for single-class source subsets.
+- **Holdout by source:** count, accuracy, positive acceptance for each positive source, and negative acceptance (false acceptance) for negative_posts. AUROC is unavailable for single-class source subsets.
 
 Metrics represent observed compatibility discrimination on these examples; 0–100 scores are not authorship probabilities. The report presents exact counts alongside rates. Small source subsets and mismatched negative genres remain major limitations. Neither repeated CV nor adding data proves improved generalization. Training and nested-development metrics cannot be substituted for final holdout results.
 

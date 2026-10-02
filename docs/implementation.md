@@ -8,7 +8,7 @@ Split and aggregate report helpers live in `holdout.py` and `report.py`. The cor
 
 ## Historical data
 
-Training Markdown files are discovered recursively. All six original posts remain in the source inventory; the seeded splitter assigns three to development and three to the mixed-class final holdout. IDs are relative source paths. Raw Markdown, cleaned text, source paths, SHA-256 file hashes, and YAML metadata (including author/date when provided) persist. Empty corpora and files without usable prose fail with the offending path.
+Training Markdown files are discovered recursively. Original posts remain in the source inventory; the seeded splitter assigns development and mixed-class final holdout roles. IDs are relative source paths. Raw Markdown, cleaned text, source paths, SHA-256 file hashes, and YAML metadata (including author/date when provided) persist. Empty corpora and files without usable prose fail with the offending path.
 
 Cleaning strips front matter, fenced and indented code, inline code, Octopress code/highlight tags, images, HTML tags/script/style/navigation/pre content, URLs, reference-link definitions, recognized navigation, and generated TOCs. It preserves link labels, headings, list-item prose, emphasis text, paragraph breaks, and punctuation. It does not pretend to infer quotation provenance. This is a conservative local regex/Markdown pipeline, not a complete CommonMark parser; unusually complex Markdown and HTML should be reviewed.
 
@@ -47,7 +47,7 @@ robust_z = (candidate-m)/scale
 stylometry_similarity = exp(-mean(min(abs(z),8))/2)
 ```
 
-The explicit floor prevents zero-MAD features from generating infinite deviations with six posts. Constant features are flagged; feature explanations prioritize nontrivial measurements when available. Five matches and five largest relative deviations are reported. An apparent "largest mismatch" may still be within the usual range when all measurements agree; descriptions remain truthful.
+The explicit floor prevents zero-MAD features from generating infinite deviations with sparse data. Constant features are flagged; feature explanations prioritize nontrivial measurements when available. Five matches and five largest relative deviations are reported. An apparent "largest mismatch" may still be within the usual range when all measurements agree; descriptions remain truthful.
 
 Character 3–5 gram TF-IDF uses sublinear term frequency, a maximum vocabulary of 50,000, and passage cosine comparisons. It uses symmetric best-match aggregation per reference document, then the median across documents. Evaluation fits the vocabulary only on the reference side. No SVM is added.
 

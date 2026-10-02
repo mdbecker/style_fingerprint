@@ -8,7 +8,7 @@ Use BDD red → green → refactor. Before each functionality stage, write behav
 
 ## Maintained documentation
 
-Maintain existing documentation in place. Do not create per-task, per-stage, dated, red/green transcript, or intermediate evaluation files under `docs/`. BDD requires tests before implementation, not committed test logs. Store generated evidence in ignored `artifacts/`. Before adding a document, check whether an existing document covers its purpose. Remove or consolidate superseded information when updating behavior.
+Maintain existing documentation in place. Use generic descriptions for private email sources in the README and docs; do not name private input roots or hard-code corpus file totals, split sizes, or run-result snapshots there. Generated artifacts compute current counts and metrics. Document algorithm thresholds and split percentages where necessary. Do not create per-task, per-stage, dated, red/green transcript, or intermediate evaluation files under `docs/`. BDD requires tests before implementation, not committed test logs. Store generated evidence in ignored `artifacts/`. Before adding a document, check whether an existing document covers its purpose. Remove or consolidate superseded information when updating behavior.
 
 The explicit maintained file list is enforced by `scripts/check_docs.py`: documentation index, current specification, consolidated historical specifications, implementation, one development note, corpus handling, evaluation, negative collection/licensing, negative attribution inventory, and curated negative source inputs. Change that list only for a justified new maintained purpose, not a task-specific report.
 

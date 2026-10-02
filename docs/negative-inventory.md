@@ -1,6 +1,6 @@
 # Negative source inventory
 
-100 distinct source documents. One sentence-complete excerpt per document; no extra examples are created from chunks. Each Markdown file and the corpus manifest retain full provenance and license evidence.
+Distinct source documents. One sentence-complete excerpt per document; no extra examples are created from chunks. Each Markdown file and the corpus manifest retain full provenance and license evidence.
 
 | Document | Credited author | Date | Whitespace words | License |
 |---|---|---|---:|---|

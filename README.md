@@ -1,8 +1,8 @@
 # Personal writing style fingerprint
 
-A local Python tool that compares new prose with historical blog posts in `blog_posts/` and positive documents in `work_corpus/` and `gmail_corpus/`, pooled into one dataset. It combines one pretrained LUAR authorship encoder, 95 interpretable stylometric measurements, and character 3–5 gram TF-IDF similarity. It explains differences and retrieves historical passages.
+A local Python tool that compares new prose with historical blog posts in `blog_posts/` and optional private email examples, pooled into one positive dataset. It combines one pretrained LUAR authorship encoder, 95 interpretable stylometric measurements, and character 3–5 gram TF-IDF similarity. It explains differences and retrieves historical passages.
 
-The **0–100 score measures compatibility with the supplied writing**, not the probability that you wrote it. It is not forensic proof, an AI detector, or a rewriting tool. The available corpus contains six blogs, 45 work emails, 18 Gmail documents, and 100 negatives. Seed 42 reserves a mixed holdout of 3 blogs, 9 work emails, 4 Gmail documents, and 20 negatives. The remaining 53 positives and 80 negatives form the development pool. Results remain exploratory: the genres, lengths, and topics differ, and most emails are short.
+The **0–100 score measures compatibility with the supplied writing**, not the probability that you wrote it. It is not forensic proof, an AI detector, or a rewriting tool. A seeded, mixed-class holdout is reserved before fitting. Results remain exploratory: the genres, lengths, and topics differ, and most emails are short.
 
 ## Install
 
@@ -72,7 +72,7 @@ report = result.to_dict()
 
 ## Corpus and rebuilds
 
-Add independent historical posts under `blog_posts/` or your individually authored plain-text emails under `work_corpus/` or `gmail_corpus/`, then rebuild. Both email directories accept `.txt` recursively and preserve the raw originals. Emails are positive examples, separate from negative-author samples. See [combined positive data](docs/corpus.md) for cleaning, provenance, per-genre evaluation, and limits. Use `--work-corpus PATH` and `--gmail-corpus PATH` to override roots. Disable both with `--no-work-corpus --no-gmail-corpus` for a blog-only build (`work_dir=False, gmail_dir=False` in the API). Discovery is recursive and accepts `.md`, `.markdown`, and `.mdown` case-insensitively. Each file retains its identity and metadata. All six original `.markdown` files are unchanged under `blog_posts/`. Source roots are complete inventories; the seeded splitter assigns roles before fitting.
+Add independent historical posts under `blog_posts/` and individually authored plain-text email examples to the configured private input directories, then rebuild. Email discovery accepts `.txt` recursively and preserves originals. Emails are positive examples, separate from other-author negatives. See [positive corpus handling](docs/corpus.md) for cleaning, provenance, and limits. Markdown discovery accepts `.md`, `.markdown`, and `.mdown` case-insensitively. Source roots are inventories; the seeded splitter assigns development and holdout roles before fitting.
 
 Builds reserve at least 50% of blogs and target 20% of each email source and negatives. Seeded source-stratified assignment keeps negative-author and copied-prose groups together. The manifest records the exact split and inventory fingerprint; loading preserves roles, while rebuilding recalculates them. Use `--seed` and `--holdout-fraction` to configure this policy. A development-only diagnostic requires `--no-holdout` (`holdout_fraction=0` in Python). See [holdout and report details](docs/evaluation.md). All data appeared in earlier project experiments; current fitting excludes the holdout, but historical exposure cannot be undone.
 
@@ -80,11 +80,11 @@ Front matter, code, HTML markup, images, URLs, and recognized navigation/TOC con
 
 Passages group adjacent paragraphs without overlapping windows, aiming for 300 words. Short tails merge when possible and oversized paragraphs split at sentence/word boundaries at 700 words. Embeddings are cached by cleaned passage text, model identifier/revision, and preprocessing/encoding versions. Rebuilding an unchanged corpus reuses embeddings; changing one passage recomputes only affected unique passages. Loading uses persisted text/features/vocabulary without model inference; the model loads lazily for new candidate text.
 
-Private inputs in `/work_corpus/` and `/gmail_corpus/`, including every nested file, are ignored by Git. Publishable documentation does not list their individual filenames or document IDs; exact private split metadata stays in ignored artifacts. Artifacts and explanation output may contain raw emails or excerpts; keep them private. Generated artifacts live under `artifacts/`; downloaded weights live under `.cache/`. `prototype/` is ignored and never imported. Load only artifact directories you trust: the vectorizer and verifier use Python/joblib serialization.
+Configured private email inputs and their nested contents must remain ignored by Git. Publishable documentation does not list their individual filenames or document IDs; exact private split metadata stays in ignored artifacts. Artifacts and explanation output may contain raw emails or excerpts; keep them private. Generated artifacts live under `artifacts/`; downloaded weights live under `.cache/`. `prototype/` is ignored and never imported. Load only artifact directories you trust: the vectorizer and verifier use Python/joblib serialization.
 
 ## Optional negative corpus
 
-The supplied `negative_posts/` contains 100 attributed excerpts: the original 12 blog articles plus 88 independently authored, explicitly public-domain Python proposals. See [sources, licenses, collection steps, and limitations](docs/negative-corpus.md). Add other authors' **real** comparable Markdown posts with `author:` and a stable `author_id:` in YAML front matter; keep article URL and license attribution alongside them. The sibling directory is discovered automatically, or use `build --negative-corpus PATH`.
+The supplied `negative_posts/` contains attributed article excerpts and independently authored, explicitly public-domain Python proposals. See [sources, licenses, collection steps, and limitations](docs/negative-corpus.md). Add other authors' **real** comparable Markdown posts with `author:` and a stable `author_id:` in YAML front matter; keep article URL and license attribution alongside them. The sibling directory is discovered automatically, or use `build --negative-corpus PATH`.
 
 Supervision requires at least 10 distinct negative documents; author count is not an eligibility restriction. Known author groups are used for evaluation when at least three are available, otherwise documented whole-document holdouts are used. Duplicate prose does not count as extra independent documents. At least six independent positive documents are required for the nested calibration procedure. Otherwise the tool stays in reference-similarity mode.
 
@@ -109,6 +109,6 @@ python -m pytest -m integration tests/test_integration.py
 
 The default suite replaces only the pretrained encoder boundary; it needs no model downloads. The opt-in integration test requires the cached real checkpoint and runs on CPU. Development follows tests-first red → green stages. Generated transcripts and metrics belong in ignored `artifacts/`; maintained docs contain one concise verification note. Run `python scripts/check_docs.py` to validate documentation inventory and links.
 
-The verified current holdout has AUROC 0.900. At cutoff 50 it accepts 15/16 positives and 8/20 negatives (40% false acceptance); no settings were tuned to these results. Open the automatically generated local `artifacts/report.html` for training, development, and source-level holdout results.
+Open the automatically generated local `artifacts/report.html` for current training, development, and source-level holdout results; dataset totals and metrics are calculated at build time. Open the automatically generated local `artifacts/report.html` for training, development, and source-level holdout results.
 
 See [the documentation index](docs/README.md) for the current specification, architecture, score math, privacy rules, and concise verification note.
