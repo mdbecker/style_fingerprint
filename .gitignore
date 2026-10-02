@@ -1,0 +1,13 @@
+prototype/
+artifacts/
+.cache/
+model_cache/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+.DS_Store
+# Private email inputs: ignore entire trees, including nested files.
+/work_corpus/
+/gmail_corpus/
