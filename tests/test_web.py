@@ -74,7 +74,7 @@ def test_same_fingerprint_reused_and_private_prose_not_written_or_logged(client,
     assert client.app.state.fingerprint is fingerprint
     assert before == {p: p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
     assert prose not in caplog.text
-    assert client.get('/api/health').json() == {'status': 'ok', 'model_loaded': True}
+    assert client.get('/api/health').json() == {'status': 'ok', 'model_loaded': True, 'device': 'cpu', 'dtype': 'float32', 'embedding_batch_size': 4}
 
 
 def test_page_is_self_contained_and_never_cached(client):

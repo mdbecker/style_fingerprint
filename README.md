@@ -152,3 +152,56 @@ Open `artifacts/report.html` for a compact Summary, Historical holdout, Decision
 Visible report metrics estimate the complete model and threshold-selection process using grouped cross-validation. Selected-configuration OOF metrics are diagnostic and remain under Technical details. Character features enter the final weighted supervised verifier only when the final development ablation demonstrates the value defined above.
 
 See [the documentation index](docs/README.md) for the current specification, architecture, score math, privacy rules, and concise verification note.
+
+### Apple Silicon and fast editing
+
+Use native arm64 Python and native arm64 PyTorch on Apple Silicon. Check the
+installation with:
+
+```python
+import platform
+import torch
+print(platform.machine())
+print(torch.backends.mps.is_built())
+print(torch.backends.mps.is_available())
+```
+
+The target environment reports `arm64`, `True`, `True`. Run `python -m
+style_fingerprint serve --device auto`; `build` and `evaluate` accept the same
+option. Auto prefers CUDA, then MPS, then CPU. Explicit `--device mps` fails
+when unavailable. Do not enable `PYTORCH_ENABLE_MPS_FALLBACK`: unsupported GPU
+operations should surface clearly. If health reports CPU, check native Python,
+MPS availability and the device option; use a compatible native PyTorch install.
+
+The editor shows the actual device in its small readiness indicator. GPU startup
+warms the encoder before readiness, reducing the first-request delay. GPU
+acceleration affects transformer embeddings; logistic regression and stylometry
+remain on CPU. GPU batches default to 16, CPU batches to 4; one GPU OOM retry
+reduces 16 to 8. Embedding output preserves input order.
+
+Analyze style defaults to FAST: document scoring, passage evidence, deviations
+and reference comparisons, with no sentence deletion. Select **Deep analysis
+(slower)** for bounded counterfactual rescoring (three passages, twenty sentences).
+The result displays request duration. `/api/analyze` accepts `mode: "fast"` or
+`"deep"` and returns `analysis_mode` and `timing_ms`; `/api/health` reports actual
+`device`, `dtype` and `embedding_batch_size`.
+
+Existing fingerprints retain FP32. Internal `Config(encoder_dtype='float16')`
+supports an explicit precision experiment/rebuild; changing precision requires
+reevaluation and rebuilt reference embeddings. Dtype participates in cache keys;
+device does not. Moving an unchanged FP32 fingerprint from CPU to MPS requires
+no rebuild. FP16 is not the default without measured acceptance: complete decision
+agreement, mean/max score drift at most 0.5/1.5 points, AUROC decline and Brier
+degradation at most 0.005, and at least 20% warm latency improvement.
+
+Run `.venv/bin/python scripts/benchmark_style.py --precision-experiment` on the
+target machine. It measures repeated warm median encoder and FAST/DEEP times for
+300, 1,000 and 2,000 words, excluding load/download/warm-up. It compares CPU FP32,
+MPS FP32 and MPS FP16 where available, and measures preflight tokenization.
+Precision validation refreshes reference vectors and scores frozen examples with
+the same fitted verifier; it performs no selection or training. Results remain
+in ignored `artifacts/performance/benchmark.json`. The benchmark does not change
+model defaults automatically. Target medium encoder speedup is 2×; FAST targets
+are 3.5 seconds for 1,000 words and 6 seconds for 2,000. Profile tokenization before
+changing its interface; remove duplicate work only if it accounts for at least
+5% of FAST latency. MLX, GGUF and model replacement remain deferred.

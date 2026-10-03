@@ -25,7 +25,7 @@ def _parser():
         build.add_argument('--seed', type=int, default=None, help='Reproducible holdout and cross-validation seed')
         build.add_argument('--holdout-fraction', type=float, default=None, help='Email/negative holdout fraction; blogs reserve at least 50 percent')
         build.add_argument('--no-holdout', action='store_true', help='Development-only diagnostic; no independent holdout')
-        build.add_argument('--device', choices=['auto','cpu','cuda','mps'], default=None)
+        build.add_argument('--device', choices=['auto','cpu','cuda','mps'], default='auto')
         build.add_argument('--offline', action='store_true', help='Require the pinned checkpoint in the local cache')
     for command in ['build', 'evaluate']:
         commands.choices[command].add_argument('--holdout-manifest', help='Sealed JSON manifest with holdout_v2 document IDs permanently excluded from fitting')
@@ -36,6 +36,7 @@ def _parser():
         sub.add_argument('--text', help='Score raw text instead of a file')
         sub.add_argument('--input-format', choices=['markdown', 'email'], default='markdown', help='Use the same email cleaning as the positive work corpus')
     serve = commands.add_parser('serve', help='Start the local writing self-editor')
+    serve.add_argument('--device', choices=['auto', 'mps', 'cuda', 'cpu'], default='auto')
     serve.add_argument('--host', default='127.0.0.1')
     serve.add_argument('--port', type=int, default=8000)
     for sub in commands.choices.values():
@@ -85,7 +86,7 @@ def main(argv=None):
         if args.command == 'serve':
             import uvicorn
             from .web import create_app
-            uvicorn.run(create_app(args.artifacts), host=args.host, port=args.port, access_log=False)
+            uvicorn.run(create_app(args.artifacts, device=args.device), host=args.host, port=args.port, access_log=False)
         elif args.command in {'build', 'evaluate'}:
             bank = Path(args.artifacts)
             if args.command == 'build' and not (bank / 'evaluation_config.json').exists():

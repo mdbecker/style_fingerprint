@@ -5,7 +5,7 @@ from .embeddings import cosine_matrix
 from .features import normalize_similarity
 
 
-def add_explanations(fp, result, clean, passages, embeddings, reference, raw_structure):
+def add_explanations(fp, result, clean, passages, embeddings, reference, raw_structure, analysis_mode='deep'):
     ordered = sorted(result.feature_deviations, key=lambda d: abs(d['robust_z']))
     # Omit fixed-zero features when there are enough meaningful measurements.
     meaningful = [d for d in ordered if d['variable_in_history'] or d['candidate_value'] or d['historical_median']]
@@ -25,7 +25,7 @@ def add_explanations(fp, result, clean, passages, embeddings, reference, raw_str
                                'largest_mismatches': sorted(scored.feature_deviations, key=lambda d: -abs(d['robust_z']))[:3] if scored is not None else []})
     result.anomalous_passages = sorted(passage_scores, key=lambda p: p['score'] if p['score'] is not None else -1)[:3]
     # Rank the least compatible passages, then cap all sentence deletion work at twenty.
-    if word_count(clean) >= 150:
+    if analysis_mode == 'deep' and word_count(clean) >= 150:
         all_sentences = sentence_spans(clean)
         inspected = 0
         for passage in result.anomalous_passages:

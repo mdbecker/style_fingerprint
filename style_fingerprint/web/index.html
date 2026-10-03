@@ -17,7 +17,7 @@
 <div class="hero"><div><div class="eyebrow">The writing self-editor</div><h1>Make it sound like you.</h1><p>Find where your draft drifts from your voice. Make the edits yourself.</p></div><div class="local-note">◎ &nbsp;Local analysis. Your words stay here.</div></div>
 <div class="workspace">
 <div>
-<section class="card" aria-labelledby="draft-heading"><div class="card-head"><h2 id="draft-heading">Your draft</h2><span class="quiet" id="draft-count">0 words</span></div><div class="editor-body"><label for="draft" class="sr-only">Paste or write your draft</label><textarea id="draft" placeholder="Paste a draft here. A note, an essay, that email you’ve been thinking about.\n\nStart with your words. We’ll help you see where your voice comes through—and where it doesn’t." spellcheck="true" aria-describedby="draft-hint"></textarea></div><div class="editor-foot"><span id="draft-hint" class="shortcut">Analyze when you’re ready &nbsp; <kbd id="shortcut-key">Ctrl ↵</kbd></span><button class="primary" id="analyze" disabled><span id="button-label">Analyze style</span><span aria-hidden="true">↗</span></button></div></section>
+<section class="card" aria-labelledby="draft-heading"><div class="card-head"><h2 id="draft-heading">Your draft</h2><span class="quiet" id="draft-count">0 words</span></div><div class="editor-body"><label for="draft" class="sr-only">Paste or write your draft</label><textarea id="draft" placeholder="Paste a draft here. A note, an essay, that email you’ve been thinking about.\n\nStart with your words. We’ll help you see where your voice comes through—and where it doesn’t." spellcheck="true" aria-describedby="draft-hint"></textarea></div><div class="editor-foot"><span id="draft-hint" class="shortcut">Analyze when you’re ready &nbsp; <kbd id="shortcut-key">Ctrl ↵</kbd></span><label class="quiet"><input type="checkbox" id="deep-analysis"> Deep analysis (slower)</label><button class="primary" id="analyze" disabled><span id="button-label">Analyze style</span><span aria-hidden="true">↗</span></button></div></section>
 <div class="error" id="error" role="alert" hidden></div>
 <section class="card analysis-card" id="analysis-card" aria-labelledby="analysis-heading" hidden><div class="card-head"><h2 id="analysis-heading">Your draft, under the lens</h2><div class="legend" aria-label="Highlight severity"><span class="swatch">Low</span><span class="swatch medium">Medium</span><span class="swatch high">High</span></div></div><div class="stale" id="stale" role="status" hidden>Draft changed. Analyze again to update these highlights.</div><div id="analysis-text" class="analysis-text"></div><div id="detail" class="detail" hidden tabindex="-1"></div><div class="analysis-note">Select an underlined sentence to explore its differences. Highlights are relative, not a verdict.</div></section>
 </div>
@@ -86,9 +86,10 @@ var StyleView = (() => {
       const response = await fetch('/api/health', {cache:'no-store'});
       if (!response.ok) throw new Error();
       const data = await response.json(); ready = data.model_loaded === true;
+      setText('model-label', ready ? `Model ready · ${{mps:'Apple GPU (MPS)',cpu:'CPU',cuda:'CUDA'}[data.device] || data.device}` : 'Model unavailable');
     } catch (_) { ready = false; }
     $('model-status').className = `status ${ready ? 'ready' : 'unavailable'}`;
-    setText('model-label', ready ? 'Model ready' : 'Model unavailable');
+    if (!ready) setText('model-label', 'Model unavailable');
     if (!ready) showError('Your saved writing fingerprint could not be loaded. Restart the local server and refresh this page. If this is your first use, follow the setup steps in the README.');
     updateDraft();
   }
@@ -122,6 +123,7 @@ var StyleView = (() => {
     setText('score',data.score.toFixed(1)); $('meter').style.width = `${Math.max(0,Math.min(100,data.score))}%`;
     setText('comparison',StyleView.scoreChange(last ? last.score : null,data.score));
     setText('decision',data.decision.replaceAll('_',' ')); $('decision').className = `badge ${data.decision === 'MISMATCH' ? 'mismatch' : ''}`;
+    setText('result-label',`Analyzed in ${(data.timing_ms/1000).toFixed(1)} s`);
     setText('evidence',data.evidence_strength); setText('analyzed-count',data.word_count.toLocaleString());
     const notices = [...(data.warnings || [])];
     if (data.evidence_strength === 'LOW' && !notices.length) notices.push('Limited evidence. Component disagreement can reduce confidence in this comparison.');
@@ -145,7 +147,7 @@ var StyleView = (() => {
     }
     if (!$('strengths').children.length) { const li = document.createElement('li'); li.textContent = 'No representative strengths are available for this draft.'; $('strengths').append(li); }
     $('detail').hidden = true; $('empty').hidden = true; $('results').hidden = false; $('analysis-card').hidden = false;
-    setText('result-label','Analysis complete'); submitted = text; last = data; updateDraft();
+    setText('result-label',`Analyzed in ${(data.timing_ms/1000).toFixed(1)} s`); submitted = text; last = data; updateDraft();
   }
   async function analyze() {
     if (busy || button.disabled) return;
@@ -153,7 +155,7 @@ var StyleView = (() => {
     const text = draft.value; busy = true; button.disabled = true; $('error').hidden = true;
     setText('button-label','Analyzing writing…'); setText('result-label','Analyzing writing…'); button.classList.add('busy');
     try {
-      const response = await fetch('/api/analyze', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text}),cache:'no-store'});
+      const response = await fetch('/api/analyze', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,mode:$('deep-analysis').checked ? 'deep' : 'fast'}),cache:'no-store'});
       let data; try { data = await response.json(); } catch (_) { throw new Error('The server returned an unreadable result. Try again.'); }
       if (!response.ok) throw new Error(data.message || 'The analysis request failed. Try again.');
       render(data,text);

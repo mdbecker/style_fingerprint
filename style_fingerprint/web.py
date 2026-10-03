@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from dataclasses import replace
 from pathlib import Path
 import json
+from time import perf_counter
 from threading import Lock
 
 from fastapi import FastAPI, Request
@@ -63,7 +64,7 @@ def present(result, text):
             'offset_unit': 'unicode_code_points'}
 
 
-def create_app(artifact_dir='artifacts', *, fingerprint=None):
+def create_app(artifact_dir='artifacts', *, fingerprint=None, device='auto'):
     lock = Lock()
 
     @asynccontextmanager
@@ -72,12 +73,13 @@ def create_app(artifact_dir='artifacts', *, fingerprint=None):
         if fingerprint is None:
             try:
                 fp = await run_in_threadpool(StyleFingerprint.load, artifact_dir)
-                # The web tool never downloads models or transmits candidate text.
-                fp.encoder.config = replace(fp.encoder.config, local_files_only=True)
-                await run_in_threadpool(fp.encoder._load)
-                app.state.fingerprint = fp
-            except Exception:
+            except (ValueError, OSError):
                 app.state.fingerprint = None
+            else:
+                # Encoder failures, including unsupported GPU operations, abort startup.
+                fp.encoder.config = replace(fp.encoder.config, local_files_only=True, device=device)
+                await run_in_threadpool(fp.encoder.prepare)
+                app.state.fingerprint = fp
         yield
         app.state.fingerprint = None
 
@@ -98,17 +100,25 @@ def create_app(artifact_dir='artifacts', *, fingerprint=None):
     @app.get('/api/health')
     def health():
         loaded = app.state.fingerprint is not None
-        return {'status': 'ok' if loaded else 'unavailable', 'model_loaded': loaded}
+        result = {'status': 'ok' if loaded else 'unavailable', 'model_loaded': loaded}
+        if loaded:
+            encoder = app.state.fingerprint.encoder
+            result.update(device=getattr(encoder, 'device', 'cpu'), dtype=encoder.config.encoder_dtype,
+                          embedding_batch_size=getattr(encoder, 'batch_size', 4))
+        return result
 
-    def analyze_text(text):
+    def analyze_text(text, mode):
+        started = perf_counter()
         with lock:
             fp = app.state.fingerprint
             if fp is None:
                 return error('MODEL_UNAVAILABLE', 'The local fingerprint is unavailable. Build it and ensure the pinned model is cached, then restart the server.', 503)
             original_cache = fp._embedding_cache.copy()
             try:
-                result = fp.score(text, explain=True, input_format='plain')
-                return present(result, text)
+                result = fp.score(text, explain=True, input_format='plain', analysis_mode=mode)
+                response = present(result, text)
+                response.update(analysis_mode=mode, timing_ms=round((perf_counter()-started)*1000))
+                return response
             except ValueError:
                 return error('INVALID_TEXT', 'This text cannot be analyzed. Use ordinary prose and shorten unusually long paragraphs.', 422)
             except Exception:
@@ -128,6 +138,9 @@ def create_app(artifact_dir='artifacts', *, fingerprint=None):
             payload = json.loads(body)
         except (ValueError, UnicodeError):
             return error('INVALID_TEXT', 'Submit a JSON object containing plain text.', 422)
+        mode = payload.get('mode', 'fast') if isinstance(payload, dict) else 'fast'
+        if not isinstance(mode, str) or mode not in {'fast', 'deep'}:
+            return error('INVALID_MODE', 'Analysis mode must be fast or deep.', 422)
         text = payload.get('text') if isinstance(payload, dict) else None
         if not isinstance(text, str) or not text.strip():
             return error('INVALID_TEXT', 'Enter some writing before analyzing.', 422)
@@ -135,6 +148,6 @@ def create_app(artifact_dir='artifacts', *, fingerprint=None):
             return error('TEXT_TOO_LONG', 'Use no more than 50,000 characters.', 413)
         if word_count(text) < 3:
             return error('TEXT_TOO_SHORT', 'Enter at least three words before running style analysis.', 422)
-        return await run_in_threadpool(analyze_text, text)
+        return await run_in_threadpool(analyze_text, text, mode)
 
     return app

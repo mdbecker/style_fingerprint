@@ -64,7 +64,7 @@ def test_given_offline_snapshot_when_model_loaded_then_tokenizer_uses_local_file
     seen = []
     monkeypatch.setattr(huggingface_hub, 'snapshot_download', lambda *a, **kw: str(tmp_path))
     class Weights:
-        def to(self, device): return self
+        def to(self, device, dtype=None): return self
         def eval(self): return self
     monkeypatch.setattr(transformers.AutoModel, 'from_pretrained', lambda path, **kw: (seen.append(path) or Weights()))
     monkeypatch.setattr(transformers.AutoTokenizer, 'from_pretrained', lambda path, **kw: (seen.append(path) or object()))
@@ -79,7 +79,7 @@ def test_given_qwen_tokenizer_when_loaded_then_mistral_regex_is_not_applied(monk
     import transformers
     monkeypatch.setattr(huggingface_hub, 'snapshot_download', lambda *a, **kw: str(tmp_path))
     class Weights:
-        def to(self, device): return self
+        def to(self, device, dtype=None): return self
         def eval(self): return self
     options = {}
     monkeypatch.setattr(transformers.AutoModel, 'from_pretrained', lambda *a, **kw: Weights())

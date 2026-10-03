@@ -125,3 +125,12 @@ Private sources, caches, prototype material, generated models, reports, and veri
 The same scoring path accepts `input_format='plain'`, retaining exact source offsets. Paragraph grouping handles trailing whitespace and CRLF without cleaning away original characters. `web.py` adapts existing passage and sentence-deletion explanations into at most ten nonoverlapping sentence ranges and omits historical retrieval excerpts/identifiers. Compatibility shown for a sentence is labelled passage context. Severity uses existing positive sensitivity/gaps (low below 2 points, medium 2–under 5, high at least 5). No second classifier, explanation algorithm or encoder is used.
 
 The FastAPI lifespan loads a production fingerprint and cached encoder once; missing/incompatible state produces a safe unavailable health/result response. A process-local lock serializes scoring. Original embedding cache state is restored even after failure, avoiding retained candidate vectors. Analysis does not save, train or mutate artifacts or thresholds. Bounded request parsing, safe errors, disabled access logs, same-origin fetches, no-store responses and an inline-assets content policy support local privacy. The single page uses an ordinary textarea plus an escaped highlighted snapshot, code-point offsets, keyboard-accessible highlights, explicit stale/loading states and in-memory comparison. The page is packaged with Python so installed `serve` retains access to it.
+
+Runtime device resolution is independent of stored build configuration. The
+encoder persists precision, uses inference mode, length-orders batches and
+restores caller order, with one 16-to-8 GPU OOM retry. Server preparation warms
+GPU kernels before exposing readiness. FAST explanations omit bounded sentence
+deletion; DEEP retains it. The API reports runtime state and request duration.
+The warm developer benchmark is `scripts/benchmark_style.py`; its local output
+and precision-gate metrics belong in ignored artifacts. No precision promotion
+is justified until the gate has measured evidence.

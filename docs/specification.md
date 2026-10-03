@@ -60,3 +60,29 @@ Nested evaluation selects match/mismatch thresholds from the selected configurat
 Plain input retains exact whitespace and Unicode; offsets are zero-based Unicode code points into the submitted source. Browser slicing uses code points, with UTF-16 conversion only for textarea selection. Sentence ranges are nonoverlapping, use existing positive deletion deltas or lower-scoring passage evidence, and retain original wording. Context compatibility is explicitly a passage score, not a separately invented sentence score. Presentation severity is HIGH for an existing positive deletion delta/passage gap of at least 5 compatibility points, MEDIUM from 2, and LOW below 2. The three strongest anomalies are ranked by that effect; no positive anomaly means no highlight. Existing bounded explanation work and evidence/minimum rules remain unchanged.
 
 Desktop uses a draft/analysis column and a results sidebar; narrow screens stack. Source substrings and explanation strings are safely escaped or rendered as text. Selecting highlights reveals measured reasons; selecting a difference navigates to its highlighted source. Editing marks the previous analysis stale, and explicit reanalysis compares the preceding score in browser memory. Loading disables duplicate requests; errors remain visible and recoverable. Submitted text is limited to 50,000 characters; oversized bodies are bounded before JSON parsing. Inference is serialized and read-only; candidate-derived embedding cache entries are discarded after every request. No submitted prose, explanations or private reference excerpts enter logs, artifacts or external services. The page/API use no-store responses, and the web encoder only loads from local cache. The UI is a self-editing aid, not an authorship or AI detector.
+
+## Native GPU performance and interactive analysis
+
+Execution device is runtime state: `build`, `evaluate` and `serve` default to
+`auto` (CUDA, then MPS, then CPU), regardless of saved build device. Explicit
+unavailable GPU requests fail. Encoder precision is persisted model state;
+legacy artifacts remain float32. Support float32/float16, with dtype-sensitive,
+device-independent embedding cache identity. Precision changes require rebuilt
+references and evaluation; preserve the frozen model and selection methodology.
+Use eval/inference mode, roughly length-ordered batches with restored order,
+GPU default 16/CPU 4, and one GPU OOM retry at 8. Warm GPU inference once before
+server readiness; report actual device/dtype/batch size without input prose.
+
+The editor/API default to FAST; DEEP explicitly extends the same scoring path
+with bounded deletion analysis. FAST retains passage-based sentence highlighting,
+exact original offsets and existing style evidence, with zero deletion rescoring
+and no fabricated sentence deltas. API responses identify mode and total duration;
+the single-file page shows device, deep control and duration. Keep one process
+and serialized inference, without additional services or alternate models.
+
+FP16 adoption requires 100% frozen-example decision agreement, mean/max score
+drift <=0.5/1.5 points, AUROC decline and Brier degradation <=0.005, and warm
+latency improvement >=20%. Until measured acceptance, new builds remain float32.
+The developer benchmark compares warm CPU/MPS precision and FAST/DEEP medians at
+300/1,000/2,000 words; target medium encoder speedup >=2× and FAST latency
+<=3.5/6 seconds at 1,000/2,000 words. Hardware latency is not a default CI assertion.

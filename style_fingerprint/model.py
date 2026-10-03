@@ -102,8 +102,9 @@ class StyleFingerprint:
                           build_mode='evaluation')
             frozen = json.loads((artifact_dir / 'evaluation_config.json').read_text())
             frozen_evaluation = json.loads((artifact_dir / 'evaluation.json').read_text())
-            config = config or Config(**frozen['configuration'])
+            config = config or Config(**{**frozen['configuration'], 'device': 'auto'})
             if (config.seed != frozen['random_seed'] or config.model_revision != frozen['encoder_revision']
+                    or config.encoder_dtype != frozen['configuration'].get('encoder_dtype', 'float32')
                     or config.model_id != frozen['encoder_model'] or frozen['feature_schema_version'] != FEATURE_SCHEMA_VERSION
                     or frozen.get('view_generation_version') != 'paragraph-views-v1'
                     or frozen.get('segmentation') != {'minimum': 300, 'preferred_min': 350, 'preferred_max': 600, 'maximum': 700, 'max_views': 6}):
@@ -181,7 +182,8 @@ class StyleFingerprint:
                 compatible = (old_manifest['model_id'] == config.model_id
                               and old_manifest['model_revision'] == config.model_revision
                               and old_manifest['preprocessing_version'] == PREPROCESSING_VERSION
-                              and old_manifest['encoding_version'] == ENCODING_VERSION)
+                              and old_manifest['encoding_version'] == ENCODING_VERSION
+                              and old_manifest['configuration'].get('encoder_dtype', 'float32') == config.encoder_dtype)
                 if compatible:
                     for name in ['passages.parquet', 'embeddings.npy']:
                         expected = old_manifest.get('artifact_hashes', {}).get(name)
@@ -189,12 +191,12 @@ class StyleFingerprint:
                             raise ValueError('Incompatible encoder cache')
                     frame = pd.read_parquet(artifact_dir / 'passages.parquet')
                     cached = np.load(artifact_dir / 'embeddings.npy', allow_pickle=False)
-                    cached_keys = [cache_key(text, config) for text in frame['text']]
+                    cached_keys = [cache_key(text, config, legacy='encoder_dtype' not in old_manifest['configuration']) for text in frame['text']]
                     if (cached.ndim != 2 or len(cached) != len(frame) or not np.isfinite(cached).all()
                             or np.any(np.linalg.norm(cached, axis=1) == 0)
                             or list(frame['embedding_key']) != cached_keys):
                         raise ValueError('Corrupt encoder cache')
-                    old_cache = dict(zip(cached_keys, cached))
+                    old_cache = dict(zip([cache_key(text, config) for text in frame['text']], cached))
             except (ValueError, OSError, KeyError):
                 pass  # An incompatible cache is rebuilt, never used for scoring.
         keys = [cache_key(p.text, config) for p in passages]
@@ -558,7 +560,7 @@ class StyleFingerprint:
             for name, expected in manifest.get('artifact_hashes', {}).items():
                 if name not in {'passages.parquet','embeddings.npy','vectorizer.joblib','verifier.joblib','evaluation.json'} or hashlib.sha256((directory/name).read_bytes()).hexdigest() != expected:
                     raise ValueError('Saved fingerprint artifact is corrupt or incompatible; rebuild.')
-            config = Config(**manifest['configuration'])
+            config = Config(**{**manifest['configuration'], 'device': 'auto'})
             if config.model_id != manifest['model_id'] or config.model_revision != manifest['model_revision']:
                 raise ValueError('Saved model identity is incompatible; rebuild.')
             documents = [Document(**d) for d in manifest['documents']]
@@ -567,7 +569,7 @@ class StyleFingerprint:
             embeddings = np.load(directory / 'embeddings.npy', allow_pickle=False)
             if embeddings.ndim != 2 or len(embeddings) != len(passages) or not np.isfinite(embeddings).all():
                 raise ValueError('Saved embeddings are incompatible or corrupt; rebuild.')
-            if list(frame['embedding_key']) != [cache_key(p.text, config) for p in passages]:
+            if list(frame['embedding_key']) != [cache_key(p.text, config, legacy='encoder_dtype' not in manifest['configuration']) for p in passages]:
                 raise ValueError('Saved passage cache identity is incompatible; rebuild.')
             evaluation = json.loads((directory / 'evaluation.json').read_text())
             verifier = joblib.load(directory / 'verifier.joblib') if manifest['mode'] == 'supervised' else None
@@ -771,7 +773,9 @@ class StyleFingerprint:
                 'limitations': ['Only positives are reserved: no independent false-positive rate, AUROC, or full accuracy estimate.',
                                 'Do not use these test results for model selection, calibration, thresholds, or parameter tuning.']}
 
-    def score(self, text, *, explain=True, input_format='markdown', _raw_structure=None):
+    def score(self, text, *, explain=True, input_format='markdown', _raw_structure=None, analysis_mode='deep'):
+        if analysis_mode not in {'fast', 'deep'}:
+            raise ValueError('Analysis mode must be fast or deep')
         if input_format not in {'markdown', 'email', 'plain'}:
             raise ValueError('Input format must be markdown, email, or plain.')
         clean = text if input_format == 'plain' else clean_email(text) if input_format == 'email' else clean_markdown(text)
@@ -828,7 +832,7 @@ class StyleFingerprint:
         add_analogues(self, result, passages, embeddings, ref)
         if explain:
             from .explain import add_explanations
-            add_explanations(self, result, clean, passages, embeddings, ref, structure)
+            add_explanations(self, result, clean, passages, embeddings, ref, structure, analysis_mode)
         return result
 
 
