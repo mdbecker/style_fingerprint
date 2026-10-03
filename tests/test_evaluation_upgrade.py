@@ -75,7 +75,19 @@ def test_supervised_evaluation_counts_roots_and_exposes_oof_margin_diagnostics(c
         (negative/f'sample-{i}.md').write_text(f'---\nauthor: Writer {i%3}\n---\n'+'\n\n'.join([(f'Buy this offer {i}! Act now! This product delivers immediately! '*35)]*4))
     fp=StyleFingerprint.build(corpus,tmp_path/'artifacts',holdout_fraction=0)
     ev.run_supervised(fp,load_corpus(negative))
+    nested=fp.evaluation['supervised']['nested_outer_scores']
+    assert len(nested)==18
+    for row in nested:
+        fold=fp.evaluation['supervised']['folds'][row['outer_fold']-1]
+        assert row['root_document_id'] not in fold['threshold_selection_document_ids']
+        assert set(fold['threshold_selection_document_ids']) == set(fold['training_document_ids'])
+        assert row['decision']==ev.decision_for_score(row['compatibility_score'],row['fold_match_threshold'],row['fold_mismatch_threshold'])
+    assert fp.evaluation['supervised']['nested_selection_metrics']==ev.nested_performance_report(nested)
     rows=fp.evaluation['supervised']['held_out_scores']
+    expected=ev.select_thresholds([r['label'] for r in rows],[r['compatibility_score'] for r in rows])
+    assert fp.evaluation['thresholds']==expected
+    exported=fp._prediction_rows()
+    assert len([r for r in exported if r['split']=='nested_outer'])==18
     assert len(rows)==18
     assert fp.manifest['dataset_counts']['training_views']==sum(row['view_count'] for row in rows)
     assert all(row['view_count']>1 for row in rows)

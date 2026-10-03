@@ -471,9 +471,11 @@ class StyleFingerprint:
         from .corpus import generate_training_views
         keys = ['root_document_id','author_id','source','label','split','word_count','view_count',
                 'embedding_score','stylometry_score','character_score','raw_margin','compatibility_score','score','decision',
+                'outer_fold','fold_match_threshold','fold_mismatch_threshold',
                 'source_type','user_embedding_similarity','best_negative_author_similarity',
                 'median_negative_author_similarity','user_vs_best_negative_gap','user_vs_median_negative_gap','hard_negative']
-        rows = []
+        rows = [{key: item.get(key) for key in keys} for item in
+                self.evaluation.get('supervised', {}).get('nested_outer_scores', [])]
         development = self.evaluation.get('supervised', {}).get('held_out_scores', [])
         if development:
             for item in development:
@@ -515,7 +517,7 @@ class StyleFingerprint:
                              compatibility_score=item['score'], score=item['score'], decision=item['decision']))
         # Preserve source-root inventory while duplicates share one independent OOF observation.
         if development:
-            by_root = {row['root_document_id']: row for row in rows}
+            by_root = {row['root_document_id']: row for row in rows if row['split'] != 'nested_outer'}
             docs_by_root = {doc.root_document_id: doc for doc in self.documents}
             by_prose = {docs_by_root[root].clean_text: row for root, row in by_root.items() if root in docs_by_root}
             for doc in self.documents:
@@ -533,6 +535,9 @@ class StyleFingerprint:
             row.setdefault('hard_negative', False)
             doc = all_docs.get(row['root_document_id'])
             row['source_type'] = getattr(doc, 'source_type', None)
+            if row['split'] == 'nested_outer':
+                row['score'] = row['compatibility_score']
+                continue
             if doc is not None and row.get('best_negative_author_similarity') is None:
                 passages = chunk_text(doc.clean_text, doc.document_id)
                 negative_ids = [d.root_document_id for d in self.documents if not document_label(d)]

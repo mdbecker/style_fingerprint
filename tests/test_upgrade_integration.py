@@ -91,7 +91,10 @@ def test_given_supervised_roots_when_saved_then_prediction_table_has_each_root_o
     fp = StyleFingerprint.build(corpus, tmp_path/'bank', holdout_fraction=0)
     rows = pd.read_parquet(tmp_path/'bank'/'evaluation_predictions.parquet')
     assert set(rows['root_document_id']) == {d.root_document_id for d in fp.documents}
-    assert rows['root_document_id'].is_unique
+    assert not rows.duplicated(['split','root_document_id']).any()
+    assert set(rows['split'])=={'development_oof','nested_outer'}
+    nested=rows.loc[rows['split']=='nested_outer']
+    assert nested[['outer_fold','fold_match_threshold']].notna().all().all()
     assert {'split','view_count','label','score','raw_margin','decision','embedding_score','stylometry_score','character_score'} <= set(rows)
     assert 'text' not in rows and 'clean_text' not in rows
 

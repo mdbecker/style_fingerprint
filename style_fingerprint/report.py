@@ -41,7 +41,7 @@ def write_html_report(evaluation, manifest, path):
     sections+='<section><h2>Summary</h2><div class="cards">'
     for name,value in [('Recognizes your writing',percent(summary_metrics.get('true_positive_rate'))),('False accepts',percent(summary_metrics.get('false_positive_rate'))),('Inconclusive',percent(summary_metrics.get('inconclusive_rate'))),('AUROC','Unavailable' if summary_metrics.get('auroc') is None else f'{summary_metrics["auroc"]:.2f}')]:
         sections+='<article><strong>'+value+'</strong><span>'+name+'</span></article>'
-    sections+='</div><p>Estimated using grouped cross-validation of the complete model-selection process.</p></section>'
+    sections+='</div><p>Estimated using grouped cross-validation of the complete model and threshold-selection process.</p></section>'
     sections+='<section><h2>Historical holdout</h2>'
     cm=holdout.get('metrics',{}).get('confusion_matrix')
     if cm and all(cm.get(k) is not None for k in ('true_positive','false_negative','true_negative','false_positive')):
@@ -79,9 +79,20 @@ def write_html_report(evaluation, manifest, path):
             sections+='<h3>Most difficult other writers</h3>'+table(['Author','False acceptance'],[(r[0],percent(r[5])) for r in difficult])
         sections+='</section>'
     sections+='<details><summary>Technical details</summary>'
-    sections+='<h3>Selected configuration OOF performance</h3>'+metrics_table(metrics)
+    sections+='<h3>Selected configuration OOF performance</h3><p>Diagnostic for the configuration selected on all development data; not an unbiased generalization estimate.</p>'+metrics_table(metrics)
     sections+='<h3>Training fit</h3><p>Optimistic fitting diagnostic, not unseen performance.</p>'+metrics_table(supervised.get('training_performance') or {})
-    sections+='<h3>Development cross-validation</h3>'+metrics_table(supervised.get('nested_selection_metrics') or {})
+    sections+='<h3>Nested selection performance</h3>'+metrics_table(supervised.get('nested_selection_metrics') or {})
+    nested_rows=supervised.get('nested_outer_scores') or []
+    fold_thresholds={row['outer_fold']:(row['fold_match_threshold'],row['fold_mismatch_threshold']) for row in nested_rows}
+    if fold_thresholds:
+        sections+=table(['Fold','Match threshold','Mismatch threshold'],[(fold,number(match,True),number(mismatch,True)) for fold,(match,mismatch) in sorted(fold_thresholds.items())])
+        matches=[t[0] for t in fold_thresholds.values()]
+        mismatches=[t[1] for t in fold_thresholds.values() if t[1] is not None]
+        match_range=max(matches)-min(matches)
+        mismatch_range=max(mismatches)-min(mismatches) if mismatches else None
+        sections+='<p>Match threshold range: '+number(match_range,True)+'. Mismatch threshold range: '+number(mismatch_range,True)+'. Missing mismatch thresholds indicate unsupported mismatch regions.</p>'
+        if match_range>15:
+            sections+='<p>Threshold estimates vary substantially across development folds, indicating limited calibration stability.</p>'
     if supervised.get('ablations'):
         sections+='<h3>Development feature ablation</h3><p>Selected configuration: '+escape(str(supervised.get('selected_configuration','Unavailable')))+'.</p>'
         sections+=table(['Configuration','TPR @ 5% FPR','AUROC','Positive acceptance','Brier error'],[(name,percent((row.get('metrics') or row).get('tpr_at_5pct_fpr')),number((row.get('metrics') or row).get('auroc')),percent((row.get('metrics') or row).get('true_positive_rate')),number((row.get('metrics') or row).get('brier'))) for name,row in supervised['ablations'].items()])

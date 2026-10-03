@@ -110,6 +110,8 @@ Changing the negative corpus invalidates frozen evaluation and supervised produc
 
 ## Understanding results
 
+Nested evaluation selects operating thresholds inside each outer training fold and applies them only to that fold’s validation roots. Visible decision metrics estimate the complete model and threshold-selection process; AUROC uses combined outer scores. Production thresholds are selected afterward from all development grouped OOF predictions. Historical holdout remains excluded from selection. MVP v1 is frozen; future improvements require genuinely new positive writing or unseen negative authors, without further tuning on the existing development or historical-holdout datasets.
+
 Without sufficient negatives, each component is normalized against leave-one-document-out historical similarities. The fixed ensemble weights are embedding **0.60**, stylometry **0.25**, and character **0.15**. A historical median maps to 50 for that component; this is a normalized reference scale, not an authorship probability or an empirically calibrated percentile.
 
 The match threshold is learned from grouped development OOF root predictions to maximize positive acceptance while targeting false acceptance at most 5%. A lower mismatch threshold targets false rejection at most 5% where data supports it. Results expose MATCH, INCONCLUSIVE or MISMATCH and both thresholds. INCONCLUSIVE means compatibility falls between the operating thresholds. Sparse-data fallback returns INCONCLUSIVE_OR_MISMATCH below the match threshold. The score 50 is not an inherently meaningful decision boundary; reports disclose unattainable targets and limited evidence.
@@ -131,6 +133,6 @@ The default suite replaces only the pretrained encoder boundary; it needs no mod
 
 Open `artifacts/report.html` for a compact Summary, Historical holdout, Decision boundaries and optional Watch-outs. Native collapsed Technical details retain evaluation tables, at most twenty authors and ten difficult roots. The visible summary names at most three difficult authors. `evaluation.json` stores complete evaluation metadata; `evaluation_predictions.parquet` stores one prose-free row per root, explicitly marked `development_oof` or `historical_holdout`. Independent-root and generated-view counts are computed separately from current inputs.
 
-Visible report metrics estimate the complete model-selection process using grouped cross-validation. Selected-configuration OOF metrics are diagnostic and remain under Technical details. Character features enter the final weighted supervised verifier only when the final development ablation demonstrates the value defined above.
+Visible report metrics estimate the complete model and threshold-selection process using grouped cross-validation. Selected-configuration OOF metrics are diagnostic and remain under Technical details. Character features enter the final weighted supervised verifier only when the final development ablation demonstrates the value defined above.
 
 See [the documentation index](docs/README.md) for the current specification, architecture, score math, privacy rules, and concise verification note.

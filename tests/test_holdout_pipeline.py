@@ -52,7 +52,7 @@ def test_given_mixed_sources_when_built_then_holdout_never_enters_fitting_and_re
     loaded=StyleFingerprint.load(tmp_path/'bank')
     assert loaded.evaluation['holdout']==report and loaded.manifest['holdout_split']==split
     html=(tmp_path/'bank'/'report.html').read_text()
-    assert all(x in html for x in ['Training fit','Development cross-validation','Historical holdout','blog','gmail_corpus','work_corpus','negative_posts'])
+    assert all(x in html for x in ['Training fit','Nested selection performance','Historical holdout','blog','gmail_corpus','work_corpus','negative_posts'])
     assert '<script>bad()' not in html
     assert not any(d.clean_text in html for d in fp.documents)
     assert str(tmp_path) not in html

@@ -96,6 +96,10 @@ def test_given_duplicate_source_roots_when_predictions_are_saved_then_each_root_
     bank=tmp_path/'bank'
     fp=StyleFingerprint.build(corpus,bank,holdout_fraction=0)
     rows=pd.read_parquet(bank/'evaluation_predictions.parquet')
+    nested=rows.loc[rows['split']=='nested_outer']
+    assert nested['root_document_id'].is_unique
+    assert nested['outer_fold'].notna().all()
+    rows=rows.loc[rows['split']=='development_oof']
     assert rows['root_document_id'].is_unique
     assert set(rows['root_document_id']) == {d.root_document_id for d in fp.documents}
     original=rows.loc[rows['root_document_id']=='post-0.markdown','compatibility_score'].iloc[0]

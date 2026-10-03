@@ -189,6 +189,33 @@ def performance_report(labels,scores,threshold=None,mismatch_threshold=None):
     return result
 
 
+def fold_prediction_rows(root_ids, labels, margins, scores, outer_fold, thresholds):
+    """Record outer decisions with thresholds frozen from inner OOF scores."""
+    match = thresholds['match_threshold']
+    mismatch = thresholds['mismatch_threshold']
+    return [dict(root_document_id=root, label=int(label), raw_margin=float(margin),
+                 compatibility_score=float(score), decision=decision_for_score(score, match, mismatch),
+                 outer_fold=outer_fold, fold_match_threshold=match, fold_mismatch_threshold=mismatch,
+                 split='nested_outer')
+            for root, label, margin, score in zip(root_ids, labels, margins, scores)]
+
+
+def nested_performance_report(rows):
+    """Aggregate frozen decisions; ranking diagnostics use combined outer scores."""
+    labels = np.array([row['label'] for row in rows], dtype=int)
+    accepted = np.array([row['decision'] == 'MATCH' for row in rows])
+    tp = int(np.sum(accepted & (labels == 1)))
+    tn = int(np.sum(~accepted & (labels == 0)))
+    fp = int(np.sum(accepted & (labels == 0)))
+    fn = int(np.sum(~accepted & (labels == 1)))
+    result = dict(accuracy=(tp+tn)/len(rows), true_positive_rate=tp/(tp+fn),
+                  false_positive_rate=fp/(fp+tn),
+                  confusion_matrix=dict(true_positive=tp, true_negative=tn, false_positive=fp, false_negative=fn),
+                  inconclusive_rate=float(np.mean([r['decision'].startswith('INCONCLUSIVE') for r in rows])))
+    result.update(_classification_metrics(labels, [r['compatibility_score']/100 for r in rows]))
+    return result
+
+
 def _estimator(kind,seed):
     from sklearn.pipeline import make_pipeline
     from sklearn.preprocessing import StandardScaler
@@ -386,11 +413,11 @@ def run_supervised(fp,negatives):
     experiments=[(configuration,kind) for configuration in CONFIGURATIONS for kind in kinds]
     predictions={key:np.full(len(docs),np.nan) for key in experiments}
     margins={key:np.full(len(docs),np.nan) for key in experiments}
-    nested_predictions=np.full(len(docs),np.nan)
+    nested_rows=[]
     components=np.zeros((len(docs),3))
     contrasts=np.zeros((len(docs),5))
     folds=[]
-    for train,test in group_splits(fp,docs,positive_ids):
+    for outer_fold,(train,test) in enumerate(group_splits(fp,docs,positive_ids),1):
         train_docs=[docs[i] for i in train];test_docs=[docs[i] for i in test]
         train_views=_views(train_docs,seed);test_views=_views(test_docs,seed)
         inner_splits=group_splits(fp,train_docs,positive_ids)
@@ -409,6 +436,7 @@ def run_supervised(fp,negatives):
                     estimator=_fit_comparison_estimator(kind,seed,xi,inner_views,positive_ids,inner_hard if configuration in {'hard_negative_weighting', 'hard_negative_weighting_without_character'} else None)
                     inner_margins[key][inner_test]=_root_margins(inner_test_docs,inner_test_views,_margin(estimator,kind,xt))
         inner_metrics={}
+        inner_thresholds={}
         for configuration in CONFIGURATIONS:
             x_train,names=_configuration_rows(fp,train_views,train_docs,positive_ids,configuration)
             x_test,_=_configuration_rows(fp,test_views,train_docs,positive_ids,configuration)
@@ -424,6 +452,7 @@ def run_supervised(fp,negatives):
                 calibrator=fit_calibrator(inner_margins[key],labels[train],seed)
                 inner_scores=calibrator.predict_proba(inner_margins[key].reshape(-1,1))[:,1]
                 inner_metrics[key]=performance_report(labels[train],inner_scores)
+                inner_thresholds[key]=select_thresholds(labels[train],inner_scores*100)
                 estimator=_fit_comparison_estimator(kind,seed,x_train,train_views,positive_ids,outer_hard if configuration in {'hard_negative_weighting', 'hard_negative_weighting_without_character'} else None)
                 margins[key][test]=_root_margins(test_docs,test_views,_margin(estimator,kind,x_test))
                 predictions[key][test]=calibrator.predict_proba(margins[key][test].reshape(-1,1))[:,1]
@@ -433,9 +462,14 @@ def run_supervised(fp,negatives):
             inner_models[configuration]=choose_verifier(lr['auroc'],gb.get('auroc'),lr['tpr_at_5pct_fpr'],gb.get('tpr_at_5pct_fpr'))
         nested_configuration=choose_configuration({c:inner_metrics[(c,k)] for c,k in inner_models.items()})
         nested_kind=inner_models[nested_configuration]
-        nested_predictions[test]=predictions[(nested_configuration,nested_kind)][test]
+        nested_key=(nested_configuration,nested_kind)
+        fold_thresholds=inner_thresholds[nested_key]
+        nested_rows.extend(fold_prediction_rows([root_id(d) for d in test_docs],labels[test],
+                           margins[nested_key][test],predictions[nested_key][test]*100,outer_fold,fold_thresholds))
         fold=_fold_metadata(docs,train,test,positive_ids)
-        fold.update(nested_selected_model=nested_kind,nested_selected_configuration=nested_configuration,
+        fold.update(outer_fold=outer_fold,fold_match_threshold=fold_thresholds['match_threshold'],
+                    fold_mismatch_threshold=fold_thresholds['mismatch_threshold'],
+                    threshold_selection_document_ids=[root_id(d) for d in train_docs],nested_selected_model=nested_kind,nested_selected_configuration=nested_configuration,
                     selection_document_ids=[root_id(d) for d in train_docs],
                     inner_selection_auroc={f'{c}/{k}':metric['auroc'] for (c,k),metric in inner_metrics.items()},
                     test_positive_ids=[root_id(docs[i]) for i in test if labels[i]],
@@ -502,9 +536,10 @@ def run_supervised(fp,negatives):
             genres[(doc.metadata or {}).get('genre','unknown')].append(index)
     fp.evaluation['supervised']={'models':model_metrics,'selected_model':selected,'metrics':model_metrics[selected],'ablations':ablations,'selected_configuration':selected_configuration,
         'per_negative_source_type':source_type_diagnostics(held_out),
-        'nested_selection_metrics':performance_report(labels,nested_predictions,threshold=thresholds['match_threshold']/100, mismatch_threshold=None if thresholds['mismatch_threshold'] is None else thresholds['mismatch_threshold']/100),
+        'nested_selection_metrics':nested_performance_report(nested_rows),
+        'nested_outer_scores':nested_rows,
         'training_performance':performance_report(labels,train_scores,threshold=thresholds['match_threshold']/100, mismatch_threshold=None if thresholds['mismatch_threshold'] is None else thresholds['mismatch_threshold']/100),
-        'cv_method':'Nested stratified root/author cross-validation; root median margins and calibration restricted to outer training folds',
+        'cv_method':'Nested stratified root/author cross-validation; root median margins; calibration and threshold selection restricted to outer training folds',
         'calibration_enabled':True,'calibration_class_prior':'equal class mass, one OOF observation per independent root',
         'positive_genre_weighting':'equal root document weight across positive sources','negative_grouping':fp.manifest['negative_grouping'],
         'folds':folds,'selection_margin_auroc':.02,'feature_importance':dict(zip(names,importance)),

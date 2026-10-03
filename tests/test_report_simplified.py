@@ -21,7 +21,7 @@ def test_given_operating_metrics_when_reported_then_summary_is_readable_and_deta
     assert 'Recognizes your writing' in visible and '88.7%' in visible
     assert '5.7%' in visible and '6.5%' in visible and '0.97' in visible
     assert '98.1%' not in visible
-    assert 'Estimated using grouped cross-validation of the complete model-selection process.' in visible
+    assert 'Estimated using grouped cross-validation of the complete model and threshold-selection process.' in visible
     assert 'Selected configuration OOF performance' in html and '0.981' in html
     assert '15 / 16 recognized' in visible and '11 / 20 correctly rejected' in visible
     assert '<h2>Historical holdout</h2>' in visible and '<h2>Decision boundaries</h2>' in visible
