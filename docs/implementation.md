@@ -2,7 +2,7 @@
 
 ## Scope
 
-The [current specification](specification.md), based on the original addendum and subsequent user instructions, replaces the original PRD's semantic encoder, large feature inventory, transformer ensembles, standalone SVM, default boosting, many-module architecture, vector index/database, exhaustive sentence deletion, and tests-last priority list. Exactly three style signals remain. No service, website, REST API, Docker, LLM explanation, AI detector, neural verifier, fine-tuning, synthetic author negatives, or automatic negative acquisition was added.
+The [current specification](specification.md), based on the original addendum and subsequent user instructions, replaces the original PRD's semantic encoder, large feature inventory, transformer ensembles, standalone SVM, default boosting, many-module architecture, vector index/database, exhaustive sentence deletion, and tests-last priority list. The three existing style signals remain available, with compact negative-author contrast derived from the existing encoder; development ablation may remove character predictors from the verifier. No service, website, REST API, Docker, LLM explanation, AI detector, neural verifier, fine-tuning, synthetic author negatives, or automatic negative acquisition was added.
 
 Split, grouped evaluation and aggregate report helpers live in `holdout.py`, `evaluation.py` and `report.py`. The core package consists of `config.py`, `corpus.py`, `features.py`, `embeddings.py`, `model.py`, `explain.py`, `cli.py`, and minimal package/CLI entry points. Plain functions and dataclasses are used; there are no registries, service abstractions, or plugin frameworks. `prototype/` is ignored, reference-only and never a runtime dependency.
 
@@ -87,6 +87,16 @@ Logistic regression remains the default. Optional LightGBM must improve grouped 
 Evaluation persists frozen model/schema/view/calibration/threshold choices. Production build refits approved data using those choices without model reselection; approved historical holdout material may be included, but permanently sealed holdout-manifest roots remain excluded. Saved report and evaluation prediction tables contain diagnostics and identifiers only, never source prose. See [evaluation](evaluation.md) for discipline and [specification](specification.md) for current requirements.
 
 Logistic coefficient and native LightGBM contribution explanations describe verifier margins, rather than additive calibrated score points. Reference-mode contributions remain weighted normalized component scores. No extra explainer model is used.
+
+## Negative contrast and development ablations
+
+Only human-authored other-author email bodies and technical AI/ML blogs are eligible negatives. Python PEPs, formal specifications, RFCs, standards, API/reference documentation and unrelated genres are excluded throughout training, calibration, evaluation, reference banks and reports. Preserve stable root/author identity and `source_type` (`email` or `technical_blog`); source labels and identities are diagnostic/grouping metadata, never predictor features. Email cleanup retains newly authored prose only. Author diversity matters more than raw document count.
+
+Use the existing encoder and symmetric multi-vector comparison for one similarity per negative author. Add user embedding similarity, best and median negative-author similarities, and user-minus-best and user-minus-median gaps. Validation roots/authors are absent from negative banks and every fitted state. Hard roots derive only from grouped development OOF scores: union of scores at/above match threshold and highest-scoring 10% of negatives. An author is hard if any root is hard or author median reaches mismatch threshold.
+
+Compare only four development configurations: baseline, baseline plus contrast, contrast plus hard-author weighting, and contrast without character predictors. Ordinary authors have total weight 1; the weighting candidate gives hard authors 2, preserving root/view balancing. Select weighting or character removal only when TPR at 5% FPR improves without AUROC declining more than 0.01 or recognition declining more than 0.03; weighting must also avoid calibration degradation. Logistic regression remains preferred under the existing challenger rule. Character measurements may remain explanatory diagnostics when classifier predictors are removed. Historical holdout never selects these choices.
+
+Changing eligible negative inputs invalidates frozen selection and supervised artifacts. Rebuild views, banks, vocabulary, features, verifier, calibration, thresholds, predictions and production state; only valid embeddings for unchanged text may be reused. Results from the former PEP population remain historical and are not directly comparable with current performance.
 
 ## Anomalies and public results
 

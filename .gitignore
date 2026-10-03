@@ -11,3 +11,9 @@ __pycache__/
 # Private email inputs: ignore entire trees, including nested files.
 /work_corpus/
 /gmail_corpus/
+
+# Other-author email bodies and identities are private inputs.
+/negative_posts/email/
+
+# Downloaded negative training prose and its local provenance stay untracked.
+/negative_posts/local/

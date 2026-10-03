@@ -17,7 +17,7 @@ def test_given_negative_predictions_when_reported_then_authors_and_difficult_roo
     assert 'Top difficult negative documents' in html
     assert html.index('negative_posts/hard.md') < html.index('negative_posts/easy.md')
     assert 'Generated training views' in html and '>12<' in html
-    assert '83.000' in html and '42.000' in html
+    assert 'Exact match threshold: 83.0' in html and 'Exact mismatch threshold: 42.0' in html
     assert 'PRIVATE PROSE' not in html and 'at 50' not in html
 
 

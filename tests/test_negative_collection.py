@@ -158,20 +158,46 @@ def test_given_same_margin_distributions_with_different_class_counts_when_calibr
     assert expanded.predict_proba(inputs) == pytest.approx(small.predict_proba(inputs),abs=1e-6)
 
 
-def test_given_rst_proposal_when_extracted_then_headers_code_and_license_are_excluded():
-    module=collector()
-    body='I think this proposal will make the interface easier to understand, and careful comparisons will help us evaluate the practical behavior. '
-    source='PEP: 9999\nTitle: HEADER_SECRET\nAuthor: AUTHOR_SECRET\n\nAbstract\n========\n\n'+body*15+'\n\n.. code-block:: python\n\n    CODE_SECRET\n\n    QUOTED_SECRET\n\nCopyright\n=========\n\nThis document is placed in the public domain.\n'
-    prose=module.extract_prose(source,'rst')
-    assert body.strip() in prose
-    for forbidden in ['HEADER_SECRET','AUTHOR_SECRET','CODE_SECRET','QUOTED_SECRET','Copyright','public domain']:
-        assert forbidden not in prose
+def test_given_formal_specification_when_collection_requested_then_rejected_before_download(tmp_path):
+    module = collector()
+    source = {'author': 'Someone', 'author_id': 'someone', 'title': 'Proposal',
+              'date': '2001-01-01', 'source_url': 'https://peps.python.org/pep-9999/',
+              'download_url': 'https://example.test/proposal.rst', 'format': 'rst',
+              'file': 'someone/post.md', 'repository_revision': 'abc', 'license': 'public-domain'}
+    fetched = []
+    with pytest.raises(ValueError, match='eligible'):
+        module.collect([source], tmp_path, fetch=lambda url: fetched.append(url))
+    assert not fetched
 
 
-def test_given_short_negative_length_target_when_collected_then_sentence_complete_short_samples_are_allowed(tmp_path):
+def test_given_retired_rst_format_when_extracted_then_it_is_unsupported():
+    with pytest.raises(ValueError, match='html or markdown'):
+        collector().extract_prose('Formal proposal prose', 'rst')
+
+
+def test_given_selected_public_email_when_collected_then_only_that_clean_message_is_retained(tmp_path):
+    import gzip,hashlib
     module=collector()
-    source={'author':'Someone','author_id':'someone','title':'A proposal','date':'2001-01-01','source_url':'https://example.test/pep','download_url':'https://example.test/pep.rst','format':'rst','file':'someone/pep.md','repository_revision':'abc','license':'public-domain','maximum_words':100,'minimum_words':50}
-    raw=('PEP: 9999\nTitle: Test\nAuthor: Someone\n\nAbstract\n========\n\n'+('This careful comparison helps us understand the practical result and decide what we should do next. '*30)).encode()
-    rows=module.collect([source],tmp_path,fetch=lambda url:raw)
-    assert 50 <= rows[0]['excerpt_words'] <= 100
-    assert '50–100' in rows[0]['sampling']
+    body='I compared the numerical algorithm carefully and explained the practical tradeoffs to the team. '*12
+    first=b'From first@example.test Sat Jan  1 00:00:00 2020\nMessage-ID: <first@example.test>\nContent-Type: text/plain; charset=utf-8\n\nUnselected message.\n'
+    selected=('From chosen@example.test Sat Jan  1 00:00:00 2020\nMessage-ID: <chosen@example.test>\nFrom: Invented Engineer <chosen@example.test>\nContent-Type: text/plain; charset=utf-8\n\n'+body+'\n\n> Earlier quoted words.\n\nRegards,\nInvented Engineer\n').encode()
+    data=gzip.compress(first+selected,mtime=0)
+    archive=tmp_path/'archive.mbox.gz';archive.write_bytes(data)
+    source={'author':'Invented Engineer','author_id':'invented-engineer','title':'Numerical experiments','date':'2020-01-01',
+            'source_type':'email','source_url':'https://example.test/public/archive','download_url':archive.as_uri(),
+            'repository_revision':'not-applicable-public-archive','license':'copyright retained; local training only',
+            'format':'mbox','file':'local/email/invented-engineer/message.md','message_id':'chosen@example.test',
+            'preserve_message':True,'minimum_words':100,'maximum_words':500,'expected_source_sha256':hashlib.sha256(data).hexdigest()}
+    rows=module.collect([source],tmp_path/'out')
+    from style_fingerprint.corpus import load_negative_corpus
+    doc=load_negative_corpus(tmp_path/'out')[0]
+    assert doc.clean_text==body.strip()
+    assert doc.source_type=='email' and doc.author_id=='invented-engineer'
+    assert rows[0]['message_id']=='chosen@example.test'
+    assert rows[0]['excerpt_words']==len(body.split())
+    source['message_id']='absent@example.test'
+    with pytest.raises(ValueError,match='selected message'):
+        module.collect([source],tmp_path/'absent')
+    source['expected_source_sha256']='wrong'
+    with pytest.raises(ValueError,match='hash|checksum'):
+        module.collect([source],tmp_path/'changed')

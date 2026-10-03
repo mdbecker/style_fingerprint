@@ -1,4 +1,5 @@
 ---
+source_type: technical_blog
 author: Jay Alammar
 author_id: jay-alammar
 title: Visualizing A Neural Machine Translation Model (Mechanics of Seq2seq Models

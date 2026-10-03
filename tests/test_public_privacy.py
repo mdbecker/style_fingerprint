@@ -24,3 +24,23 @@ def test_given_nested_private_inputs_when_git_checks_then_both_trees_are_ignored
     paths=[f'{source}/nested/synthetic-message.txt' for source in ['work_corpus','gmail_corpus']]
     result=subprocess.run(['git','-C',str(tmp_path),'-c','core.excludesFile=/dev/null','check-ignore','--no-index',*paths],capture_output=True,text=True,check=True)
     assert set(result.stdout.splitlines())==set(paths)
+
+
+def test_given_private_negative_emails_when_git_checks_then_author_subtrees_are_ignored(tmp_path):
+    root=Path(__file__).resolve().parents[1]
+    (tmp_path/'.gitignore').write_bytes((root/'.gitignore').read_bytes())
+    subprocess.run(['git','init','-q',str(tmp_path)],check=True)
+    path='negative_posts/email/invented-writer/invented-message.md'
+    result=subprocess.run(['git','-C',str(tmp_path),'-c','core.excludesFile=/dev/null','check-ignore','--no-index',path],capture_output=True,text=True)
+    assert result.returncode == 0 and result.stdout.strip()==path
+
+
+def test_given_local_downloaded_negative_corpus_when_git_checks_then_prose_and_downloads_are_ignored(tmp_path):
+    root=Path(__file__).resolve().parents[1]
+    (tmp_path/'.gitignore').write_bytes((root/'.gitignore').read_bytes())
+    subprocess.run(['git','init','-q',str(tmp_path)],check=True)
+    paths=['negative_posts/local/blogs/invented-writer/post.md',
+           'negative_posts/local/email/invented-writer/message.md',
+           'artifacts/negative_collection/email/archive.mbox']
+    result=subprocess.run(['git','-C',str(tmp_path),'-c','core.excludesFile=/dev/null','check-ignore','--no-index',*paths],capture_output=True,text=True)
+    assert set(result.stdout.splitlines()) == set(paths)

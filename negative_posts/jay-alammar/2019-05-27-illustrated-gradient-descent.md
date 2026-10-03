@@ -1,4 +1,5 @@
 ---
+source_type: technical_blog
 author: Jay Alammar
 author_id: jay-alammar
 title: How Machines Learn (The Illustrated Gradient Descent)

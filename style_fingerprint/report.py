@@ -1,70 +1,105 @@
-"""Standalone aggregate HTML: no raw text, private filenames, or remote assets."""
+"""Small static summary with bounded, collapsed prose-free diagnostics."""
 from html import escape
 from pathlib import Path
 from statistics import mean, median
 
 
 def write_html_report(evaluation, manifest, path):
-    def number(value):
-        return 'Unavailable' if value is None else f'{value:.3f}'
+    def number(value, exact=False):
+        return 'Unavailable' if value is None else (str(value) if exact else f'{value:.3f}')
+    def percent(value):
+        return 'Unavailable' if value is None else f'{100*value:.1f}'.rstrip('0').rstrip('.')+'%'
+    def table(headers, rows):
+        return '<table><thead><tr>'+''.join('<th>'+escape(str(h))+'</th>' for h in headers)+'</tr></thead><tbody>'+''.join('<tr>'+''.join('<td>'+escape(str(v))+'</td>' for v in row)+'</tr>' for row in rows)+'</tbody></table>'
     def metrics_table(metrics):
-        keys=[('tpr_at_1pct_fpr','TPR @ 1% FPR'),('tpr_at_5pct_fpr','TPR @ 5% FPR'),('tpr_at_10pct_fpr','TPR @ 10% FPR'),('accuracy','Accuracy at selected match threshold'),('auroc','AUROC'),('average_precision','Average precision'),
-              ('true_positive_rate','Positive acceptance at selected match threshold'),('false_positive_rate','Negative acceptance at selected match threshold'),
-              ('brier','Brier error (lower is better)'),('inconclusive_rate','Inconclusive rate')]
-        return '<table><tbody>'+''.join(f'<tr><th>{name}</th><td>{number(metrics.get(key))}</td></tr>' for key,name in keys)+'</tbody></table>'
-    supervised=evaluation.get('supervised',{})
-    holdout=evaluation.get('holdout')
-    split=manifest.get('holdout_split') or {}
-    counts=manifest.get('evaluation_dataset_counts') or manifest['dataset_counts']
-    sections=f'''<header><p class="eyebrow">Writing style evaluation</p><h1>How well does the model recognize your writing?</h1>
-<p>Style compatibility is a comparison with your supplied writing, not proof of authorship.</p></header>
-<div class="cards"><article><strong>{counts['positive_documents']}</strong><span>Independent development positives</span></article>
-<article><strong>{counts['negative_documents']}</strong><span>Independent development negatives</span></article>
-<article><strong>{holdout['count'] if holdout else 0}</strong><span>Reserved holdout documents</span></article></div>
-<p>Split seed: {escape(str(split.get('seed','No seeded holdout')))}. Blogs reserve at least 50%; email and negative target: {escape(str(split.get('fraction','Unavailable')))}. Author and copied-prose groups stay together.</p>'''
-    training_views=supervised.get('generated_training_views', counts.get('training_views'))
-    if training_views is not None:
-        sections+=f'<p>Generated training views: <strong>{training_views}</strong>. Views share their source root and are not independent documents.</p>'
+        keys=[('tpr_at_1pct_fpr','TPR @ 1% FPR'),('tpr_at_5pct_fpr','TPR @ 5% FPR'),('tpr_at_10pct_fpr','TPR @ 10% FPR'),('accuracy','Accuracy'),('auroc','AUROC'),('average_precision','Average precision'),('true_positive_rate','Positive acceptance'),('false_positive_rate','Negative acceptance'),('brier','Brier error'),('inconclusive_rate','Inconclusive rate')]
+        return table(['Metric','Value'], [(name,number(metrics.get(key))) for key,name in keys])
+    supervised=evaluation.get('supervised') or {}
+    metrics=supervised.get('metrics') or {}
+    holdout=evaluation.get('holdout') or {}
     thresholds=evaluation.get('thresholds') or supervised.get('thresholds') or {}
-    sections+='<section><h2>Operating thresholds</h2><p>Match threshold: '+number(thresholds.get('match_threshold'))+'. Mismatch threshold: '+number(thresholds.get('mismatch_threshold'))+'. Thresholds are selected from grouped development out-of-fold root predictions only; intermediate scores are inconclusive.</p></section>'
+    match=thresholds.get('match_threshold'); mismatch=thresholds.get('mismatch_threshold')
+    negatives=evaluation.get('negative_diagnostics') or []
+    def score(row):
+        return row.get('compatibility_score', row.get('score', 0))
+    def development(row):
+        return row.get('split',row.get('role','development')) in {'development','development_oof'}
+    # Summary difficulty is based only on development OOF; holdout stays separate.
+    dev=[r for r in negatives if development(r)]
+    authors={}
+    for row in dev:
+        if row.get('author_id'):
+            authors.setdefault(row['author_id'],[]).append(row)
+    author_rows=[]
+    for author, rows in authors.items():
+        scores=[score(r) for r in rows]
+        rate=sum(r.get('decision')=='MATCH' for r in rows)/len(rows)
+        author_rows.append((author,len(rows),mean(scores),median(scores),max(scores),rate))
+    author_rows.sort(key=lambda r: (-r[5],-r[3],str(r[0])))
+    sections='<header><h1>Writing Style Fingerprint</h1><p>Style compatibility compares supplied writing; it is not proof of authorship.</p></header>'
+    sections+='<section><h2>Summary</h2><div class="cards">'
+    for name,value in [('Recognizes your writing',percent(metrics.get('true_positive_rate'))),('False accepts',percent(metrics.get('false_positive_rate'))),('Inconclusive',percent(metrics.get('inconclusive_rate'))),('AUROC','Unavailable' if metrics.get('auroc') is None else f'{metrics["auroc"]:.2f}')]:
+        sections+='<article><strong>'+value+'</strong><span>'+name+'</span></article>'
+    sections+='</div><p>Grouped development out-of-fold results.</p></section>'
+    sections+='<section><h2>Historical holdout</h2>'
+    cm=holdout.get('metrics',{}).get('confusion_matrix')
+    if cm and all(cm.get(k) is not None for k in ('true_positive','false_negative','true_negative','false_positive')):
+        sections+=f'<p>Your writing: <strong>{cm["true_positive"]} / {cm["true_positive"]+cm["false_negative"]} recognized</strong></p><p>Other technical/email writers: <strong>{cm["true_negative"]} / {cm["true_negative"]+cm["false_positive"]} correctly rejected</strong></p>'
+    elif holdout:
+        sections+='<p>Holdout decisions are unavailable without calibrated thresholds.</p>'
+    else:
+        sections+='<p>No mixed-class historical holdout is configured.</p>'
+    sections+='<p>This historical holdout has already been inspected and should not be used to tune the model.</p></section>'
+    sections+='<section><h2>Decision boundaries</h2>'
+    if match is not None:
+        sections+=f'<p><strong>MATCH ≥ {match:.0f}</strong></p>'
+        if mismatch is not None:
+            sections+=f'<p>INCONCLUSIVE {mismatch:.0f}–{match:.0f}</p><p>MISMATCH &lt; {mismatch:.0f}</p>'
+        else:
+            sections+=f'<p>INCONCLUSIVE_OR_MISMATCH &lt; {match:.0f}</p>'
+    else:
+        sections+='<p>Learned thresholds are unavailable.</p>'
+    sections+='</section>'
+    warnings=[]
     if thresholds.get('target_achieved') is False:
-        sections+='<p>The development 5% false-acceptance target could not be achieved.</p>'
-    if thresholds and thresholds.get('mismatch_threshold') is None:
-        sections+='<p>Development data does not support two distinct thresholds; scores below the match threshold return INCONCLUSIVE_OR_MISMATCH.</p>'
-    if supervised:
-        sections+='<section><h2>Selected model development operating point</h2><p>Grouped out-of-fold root predictions for the final selected model, using the frozen decision thresholds.</p>'+metrics_table(supervised.get('metrics',{}))+'</section>'
-        sections+='<div class="grid"><section><h2>Training fit</h2><p>Predictions on development documents used to fit the final model. Optimistic diagnostic; do not use this as an estimate of unseen performance.</p>'+metrics_table(supervised.get('training_performance',{}))+'</section>'
-        sections+='<section><h2>Development cross-validation</h2><p>Outer test predictions use model selection and calibration confined to each outer training fold. This measures the selection procedure; the final model choice uses development data only.</p>'+metrics_table(supervised.get('nested_selection_metrics',{}))+'</section></div>'
-        sections+='<p>Final model: '+escape(supervised['selected_model'])+'. Individual model comparison AUROC: '+', '.join(escape(k)+': '+number(v['auroc']) for k,v in supervised['models'].items())+'. These comparisons also guide final model selection.</p>'
-    else:
-        sections+='<section><h2>Training fit / Development cross-validation</h2><p>Supervised metrics unavailable: insufficient independent development data. The model uses reference similarity.</p></section>'
-    if holdout:
-        sections+='<section><h2>Independent holdout</h2><p>Both classes were reserved before fitting. These predictions never determine fitting, calibration, model selection, or operating thresholds.</p>'+metrics_table(holdout['metrics'])
-        cm=holdout['metrics']['confusion_matrix']
-        sections+='<h3>Counts at selected match threshold</h3><table><tr><th>Actual writing</th><th>Accepted</th><th>Rejected</th></tr><tr><th>Positive</th><td>'+str(cm['true_positive'])+'</td><td>'+str(cm['false_negative'])+'</td></tr><tr><th>Negative</th><td>'+str(cm['false_positive'])+'</td><td>'+str(cm['true_negative'])+'</td></tr></table>'
-        sections+='<h3>Holdout by source</h3><p>Positive acceptance is desirable for your sources. Negative acceptance is an error for negative_posts. Single-class source subsets have no AUROC.</p><table><tr><th>Source</th><th>Documents</th><th>Accuracy</th><th>Positive acceptance</th><th>Negative acceptance</th></tr>'
-        for src,row in holdout['by_source'].items():
-            m=row['metrics'];sections+=f'<tr><th>{escape(src)}</th><td>{row["count"]}</td><td>{number(m["accuracy"])}</td><td>{number(m["true_positive_rate"])}</td><td>{number(m["false_positive_rate"])}</td></tr>'
-        sections+='</table></section>'
-    else:
-        sections+='<section><h2>Independent holdout</h2><p>No mixed-class holdout is configured. Development results do not substitute for it.</p></section>'
-    negatives=evaluation.get('negative_diagnostics', [])
-    if negatives:
-        authors={}
-        for row in negatives:
-            if row.get('author_id'):
-                authors.setdefault(row['author_id'], []).append(row)
-        sections+='<section><h2>Per-negative-author performance</h2><p>Development predictions are out of fold. This author summary combines development and historical holdout diagnostics; it is not an independent performance estimate.</p><table><tr><th>Author</th><th>Documents</th><th>Mean compatibility</th><th>Median compatibility</th><th>Maximum compatibility</th><th>False acceptance rate</th></tr>'
-        for author,rows in sorted(authors.items()):
-            scores=[r['score'] for r in rows]
-            rate=sum(r.get('decision')=='MATCH' for r in rows)/len(rows)
-            sections+=f'<tr><th>{escape(str(author))}</th><td>{len(rows)}</td><td>{number(mean(scores))}</td><td>{number(median(scores))}</td><td>{number(max(scores))}</td><td>{number(rate)}</td></tr>'
-        sections+='</table></section><section><h2>Top difficult negative documents</h2><p>Ranked by development out-of-fold compatibility. This diagnostic does not alter training weights.</p><table><tr><th>Document</th><th>Author</th><th>Source</th><th>Words</th><th>Compatibility</th><th>Margin</th><th>Embedding</th><th>Stylometry</th><th>Character</th><th>Decision</th></tr>'
-        for row in sorted((r for r in negatives if r.get('role','development')=='development'),key=lambda r: (-r['score'], str(r.get('root_document_id','')))):
-            sections+='<tr>'+''.join('<td>'+escape(number(row.get(k)) if k in {'score','raw_margin','embedding','stylometry','character'} else str(row.get(k,'Unavailable')))+'</td>' for k in ('root_document_id','author_id','source','word_count','score','raw_margin','embedding','stylometry','character','decision'))+'</tr>'
-        sections+='</table></section>'
-    sections+='''<aside><h2>How to interpret this report</h2><p>All supplied documents appeared in earlier project experiments. This split is independent of the current fit, but cannot undo earlier exposure. Do not adjust settings using these holdout results; repeated inspection consumes their independence.</p><p>Small source subsets, related email conversations without thread metadata, and topic or genre differences limit generalization. The frozen public encoder’s original training membership is unknown. Evidence length is not certainty about authorship. This report contains aggregate metrics and negative identifiers only; saved model artifacts still contain private source text.</p></aside>'''
-    html='''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Writing style evaluation</title><style>
-body{font:16px/1.6 system-ui,sans-serif;background:#f4f6fa;color:#192436;margin:0}main{max-width:1060px;margin:auto;padding:40px 24px}h1{font-size:34px;line-height:1.2;max-width:800px}h2{font-size:23px}.eyebrow{color:#326bc6;font-weight:700}.cards,.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}.grid{grid-template-columns:repeat(2,1fr)}section{overflow:auto}article,section,aside{background:white;border:1px solid #dce2ec;border-radius:12px;padding:24px;margin:20px 0}article strong{display:block;font-size:34px;color:#245daf}article span{display:block;color:#526276}table{border-collapse:collapse;width:100%;margin:18px 0;font-variant-numeric:tabular-nums}td,th{text-align:left;padding:10px;border-bottom:1px solid #e3e8ef}th{font-weight:600}aside{background:#eaf1fc}p{color:#46546a}@media(max-width:700px){.cards,.grid{grid-template-columns:1fr}main{padding:20px 12px}section{overflow:auto}h1{font-size:28px}}
+        warnings.append('The development false-acceptance target could not be achieved.')
+    if match is not None and mismatch is not None and match-mismatch < 1:
+        warnings.append('The inconclusive region is extremely narrow; use exact boundaries in Technical details.')
+    if author_rows and (author_rows[0][5]>0 or any(r.get('hard_negative') for r in dev)):
+        warnings.append('The model still confuses some stylistically similar technical/email writers.')
+    if supervised and metrics.get('true_positive_rate') is None:
+        warnings.append('Development recognition metrics are unavailable.')
+    if not supervised:
+        warnings.append('Insufficient independent development data: scoring uses reference similarity.')
+    if warnings:
+        sections+='<section><h2>Watch-outs</h2>'+''.join('<p>'+w+'</p>' for w in warnings[:3])
+        difficult=[r for r in author_rows if r[5]>0 or any(row.get('hard_negative') for row in authors[r[0]])][:3]
+        if difficult:
+            sections+='<h3>Most difficult other writers</h3>'+table(['Author','False acceptance'],[(r[0],percent(r[5])) for r in difficult])
+        sections+='</section>'
+    sections+='<details><summary>Technical details</summary>'
+    sections+='<h3>Selected model development operating point</h3>'+metrics_table(metrics)
+    sections+='<h3>Training fit</h3><p>Optimistic fitting diagnostic, not unseen performance.</p>'+metrics_table(supervised.get('training_performance') or {})
+    sections+='<h3>Development cross-validation</h3>'+metrics_table(supervised.get('nested_selection_metrics') or {})
+    if supervised.get('ablations'):
+        sections+='<h3>Development feature ablation</h3><p>Selected configuration: '+escape(str(supervised.get('selected_configuration','Unavailable')))+'.</p>'
+        sections+=table(['Configuration','TPR @ 5% FPR','AUROC','Positive acceptance','Brier error'],[(name,percent((row.get('metrics') or row).get('tpr_at_5pct_fpr')),number((row.get('metrics') or row).get('auroc')),percent((row.get('metrics') or row).get('true_positive_rate')),number((row.get('metrics') or row).get('brier'))) for name,row in supervised['ablations'].items()])
+    sections+='<h3>Model comparison</h3>'+table(['Model','AUROC'],[(k,number(v.get('auroc'))) for k,v in supervised.get('models',{}).items()])
+    sections+='<p>Final model: '+escape(str(supervised.get('selected_model','reference_similarity')))+'. Exact match threshold: '+number(match,True)+'. Exact mismatch threshold: '+number(mismatch,True)+'.</p>'
+    counts=manifest.get('evaluation_dataset_counts') or manifest.get('dataset_counts') or {}
+    sections+='<h3>Independent roots and generated views</h3>'+table(['Population','Count'],counts.items())
+    views=supervised.get('generated_training_views',counts.get('training_views'))
+    if views is not None:
+        sections+=f'<p>Generated training views: <strong>{views}</strong>. Views are not independent documents.</p>'
+    sections+='<p>Split seed: '+escape(str((manifest.get('holdout_split') or {}).get('seed','Unavailable')))+'.</p>'
+    sections+='<h3>Historical holdout operating metrics</h3>'+metrics_table(holdout.get('metrics') or {})
+    sections+='<h3>Holdout by source</h3>'+table(['Source','Documents','Positive acceptance','Negative acceptance'],[(source,row.get('count'),percent(row.get('metrics',{}).get('true_positive_rate')),percent(row.get('metrics',{}).get('false_positive_rate'))) for source,row in holdout.get('by_source',{}).items()])
+    for source,label in [('email','Negative email authors'),('technical_blog','Negative technical-blog authors')]:
+        sections+='<h3>'+label+'</h3>'+table(['Split','Documents','Authors','Median compatibility','False acceptance'],[(split,len(rows),len({r.get('author_id') or r.get('root_document_id') for r in rows}),number(median([score(r) for r in rows])),percent(sum(r.get('decision')=='MATCH' for r in rows)/len(rows))) for split in ('development_oof','historical_holdout') if (rows:=[r for r in negatives if r.get('source_type')==source and development(r)==(split=='development_oof')])])
+    sections+='<h3>Per-negative-author performance</h3><p>Development OOF only; complete diagnostics remain in evaluation.json.</p>'+table(['Author','Documents','Mean compatibility','Median compatibility','Maximum compatibility','False acceptance rate'],[(r[0],r[1],number(r[2]),number(r[3]),number(r[4]),percent(r[5])) for r in author_rows[:20]])
+    sections+='<h3>Top difficult negative documents</h3><p>Development OOF only; complete rows remain in evaluation_predictions.parquet.</p>'+table(['Document','Author','Source','Words','Compatibility','Margin','Embedding','Stylometry','Character','Decision'],[(r.get('root_document_id','Unavailable'),r.get('author_id','Unknown'),r.get('source_type',r.get('source','Unavailable')),r.get('word_count','Unavailable'),number(score(r)),number(r.get('raw_margin')),number(r.get('embedding_score',r.get('embedding'))),number(r.get('stylometry_score',r.get('stylometry'))),number(r.get('character_score',r.get('character'))),r.get('decision','Unavailable')) for r in sorted(dev,key=lambda r:(-score(r),str(r.get('root_document_id',''))))[:10]])
+    sections+='<p>Small source subsets, related correspondence, topic differences and unknown encoder pretraining membership limit generalization. Source categories are diagnostic metadata, never classifier features. No source prose is included here.</p></details>'
+    html='''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Writing Style Fingerprint</title><style>
+body{font:16px/1.6 system-ui,sans-serif;background:#f4f6fa;color:#192436;margin:0}main{max-width:1000px;margin:auto;padding:32px 24px}h1{font-size:34px}h2{font-size:23px}section,details{background:white;border:1px solid #dce2ec;border-radius:12px;padding:24px;margin:20px 0;overflow:auto}.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:20px}article strong{display:block;font-size:30px;color:#245daf}article span,p{color:#526276}summary{cursor:pointer;font-weight:700;font-size:23px}table{border-collapse:collapse;width:100%;margin:18px 0;font-variant-numeric:tabular-nums}td,th{text-align:left;padding:10px;border-bottom:1px solid #e3e8ef}@media(max-width:700px){.cards{grid-template-columns:repeat(2,1fr)}main{padding:20px 12px}}
 </style></head><body><main>'''+sections+'</main></body></html>'
     Path(path).write_text(html,encoding='utf-8')

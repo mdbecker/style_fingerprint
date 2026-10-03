@@ -1,4 +1,5 @@
 ---
+source_type: technical_blog
 author: Jay Alammar
 author_id: jay-alammar
 title: The Illustrated BERT, ELMo, and co. (How NLP Cracked Transfer Learning)

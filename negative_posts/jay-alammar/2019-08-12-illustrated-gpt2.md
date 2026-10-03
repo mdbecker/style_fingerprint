@@ -1,4 +1,5 @@
 ---
+source_type: technical_blog
 author: Jay Alammar
 author_id: jay-alammar
 title: The Illustrated GPT-2 (Visualizing Transformer Language Models)

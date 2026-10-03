@@ -12,7 +12,7 @@ def _author_key(document):
     return str(getattr(document,'author_id',None) or (document.metadata or {}).get('author_id') or document.author or '').strip().casefold()
 
 
-def root_sample_weights(root_ids, labels, author_ids=None):
+def root_sample_weights(root_ids, labels, author_ids=None, *, hard_negative_authors=None):
     """Equal root influence; known negative authors divide equal influence among roots."""
     authors = list(author_ids) if author_ids is not None else [None] * len(root_ids)
     counts = Counter(root_ids)
@@ -23,14 +23,17 @@ def root_sample_weights(root_ids, labels, author_ids=None):
     # Preserve average negative root mass while balancing known authors.
     known_roots = sum(map(len, author_roots.values()))
     author_mass = known_roots / len(author_roots) if author_roots else 1
-    return np.array([author_mass / len(author_roots[author]) / counts[root]
+    weights = np.array([author_mass / len(author_roots[author]) / counts[root]
                      if not label and author else 1 / counts[root]
                      for root, label, author in zip(root_ids, labels, authors)], dtype=float)
+    if hard_negative_authors:
+        weights *= [2. if not label and author in hard_negative_authors else 1. for label, author in zip(labels, authors)]
+    return weights
 
 
-def balanced_root_sample_weights(root_ids, labels, author_ids=None):
+def balanced_root_sample_weights(root_ids, labels, author_ids=None, *, hard_negative_authors=None):
     """Balance class mass after hierarchy weighting, independent of sklearn version."""
-    weights = root_sample_weights(root_ids, labels, author_ids)
+    weights = root_sample_weights(root_ids, labels, author_ids, hard_negative_authors=hard_negative_authors)
     labels = np.asarray(labels, dtype=int)
     total = weights.sum()
     classes = np.unique(labels)
@@ -200,10 +203,10 @@ def _margin(estimator,kind,x):
     return np.asarray(estimator.decision_function(x) if kind=='logistic_regression' else estimator.predict(x,raw_score=True))
 
 
-def _fit_comparison_estimator(kind,seed,x,documents,positive_ids):
+def _fit_comparison_estimator(kind,seed,x,documents,positive_ids,hard_negative_authors=None):
     labels=[int(root_id(d) in positive_ids) for d in documents]
-    weights=root_sample_weights([root_id(d) for d in documents],labels,[_author_key(d) for d in documents])
-    balanced_weights=balanced_root_sample_weights([root_id(d) for d in documents],labels,[_author_key(d) for d in documents])
+    weights=root_sample_weights([root_id(d) for d in documents],labels,[_author_key(d) for d in documents],hard_negative_authors=hard_negative_authors)
+    balanced_weights=balanced_root_sample_weights([root_id(d) for d in documents],labels,[_author_key(d) for d in documents],hard_negative_authors=hard_negative_authors)
     estimator=_estimator(kind,seed)
     kwargs={'logisticregression__sample_weight':balanced_weights,'standardscaler__sample_weight':weights} if kind=='logistic_regression' else {'sample_weight':balanced_weights}
     return estimator.fit(x,labels,**kwargs)
@@ -242,13 +245,114 @@ def _fold_metadata(documents,train,test,positive_ids):
             'test_document_ids':[root_id(documents[i]) for i in test],
             'training_negative_author_ids':sorted({_author_key(documents[i]) for i in train if root_id(documents[i]) not in positive_ids and _author_key(documents[i])}),
             'test_negative_author_ids':sorted({_author_key(documents[i]) for i in test if root_id(documents[i]) not in positive_ids and _author_key(documents[i])}),
-            'reference_document_ids':[root_id(documents[i]) for i in train if root_id(documents[i]) in positive_ids]}
+            'reference_document_ids':[root_id(documents[i]) for i in train if root_id(documents[i]) in positive_ids],
+            'negative_reference_document_ids':[root_id(documents[i]) for i in train if root_id(documents[i]) not in positive_ids],
+            'negative_reference_author_ids':sorted({_author_key(documents[i]) for i in train if root_id(documents[i]) not in positive_ids and _author_key(documents[i])})}
+
+
+
+CONFIGURATIONS = {
+    'baseline': {'include_contrast': False, 'include_character': True},
+    'contrast': {'include_contrast': True, 'include_character': True},
+    'hard_negative_weighting': {'include_contrast': True, 'include_character': True},
+    'without_character': {'include_contrast': True, 'include_character': False},
+}
+
+
+def choose_configuration(metrics):
+    """Adopt only an operational improvement within explicit degradation guards."""
+    selected = 'baseline'
+    for name in CONFIGURATIONS:
+        if name not in metrics or name == 'baseline':
+            continue
+        candidate, incumbent = metrics[name], metrics[selected]
+        comparisons = [incumbent]
+        if name in {'hard_negative_weighting', 'without_character'} and 'contrast' in metrics:
+            comparisons.append(metrics['contrast'])
+        if all(candidate['tpr_at_5pct_fpr'] > reference['tpr_at_5pct_fpr'] + 1e-12
+               and candidate['auroc'] >= reference['auroc'] - .01 - 1e-12
+               and candidate['true_positive_rate'] >= reference['true_positive_rate'] - .03 - 1e-12
+               and candidate['brier'] <= reference['brier'] + 1e-12
+               for reference in comparisons):
+            selected = name
+    return selected
+
+
+def mark_hard_negatives(rows, match_threshold, mismatch_threshold=None):
+    """Mark OOF roots only, then summarize difficult authors without holdout input."""
+    negatives = [r for r in rows if not r['label'] and r['split'] == 'development_oof']
+    cutoff = sorted((r['compatibility_score'] for r in negatives), reverse=True)[max(0, int(np.ceil(len(negatives)*.1))-1)] if negatives else np.inf
+    for row in rows:
+        row['hard_negative'] = bool(row in negatives and (row['compatibility_score'] >= match_threshold or row['compatibility_score'] >= cutoff))
+    authors = {}
+    for author in sorted({r.get('author_id') for r in negatives if r.get('author_id')}):
+        grouped = [r for r in negatives if r.get('author_id') == author]
+        scores = [r['compatibility_score'] for r in grouped]
+        authors[author] = {'documents':len(grouped), 'mean_compatibility':float(np.mean(scores)),
+            'median_compatibility':float(np.median(scores)), 'maximum_compatibility':max(scores),
+            'false_acceptance_rate':float(np.mean([r['decision']=='MATCH' for r in grouped])),
+            'hard_negative':bool(any(r['hard_negative'] for r in grouped) or mismatch_threshold is not None and np.median(scores) >= mismatch_threshold)}
+    return authors
+
+
+def source_type_diagnostics(rows):
+    result = {}
+    for source in ('email','technical_blog'):
+        grouped=[r for r in rows if not r['label'] and r.get('source_type') == source and r.get('split') == 'development_oof']
+        result[source]={'documents':len(grouped), 'authors':len({r['author_id'] for r in grouped if r.get('author_id')}),
+            'median_compatibility':float(np.median([r['compatibility_score'] for r in grouped])) if grouped else None,
+            'false_acceptance_rate':float(np.mean([r['decision']=='MATCH' for r in grouped])) if grouped else None}
+    return result
+
+
+def _configuration_rows(fp, documents, training_docs, positive_ids, configuration):
+    refs=[root_id(d) for d in training_docs if root_id(d) in positive_ids]
+    negatives=[root_id(d) for d in training_docs if root_id(d) not in positive_ids]
+    cache=getattr(fp, '_evaluation_comparison_cache', None)
+    key=(tuple(d.document_id for d in documents),tuple(refs),tuple(negatives))
+    if cache is None or key not in cache:
+        complete=fp._comparison_rows(documents, refs, negative_reference_ids=negatives)
+        if cache is not None:
+            cache[key]=complete
+    else:
+        complete=cache[key]
+    x,names=complete
+    flags=CONFIGURATIONS[configuration]
+    contrast_names={'user_embedding_similarity','best_negative_author_similarity','median_negative_author_similarity','user_vs_best_negative_gap','user_vs_median_negative_gap'}
+    retained=[i for i,name in enumerate(names) if (flags['include_contrast'] or name not in contrast_names) and (flags['include_character'] or name!='char_ngram')]
+    return x[:,retained],[names[i] for i in retained]
+
+
+def _training_hard_authors(fp, documents, positive_ids):
+    """Single fixed weighting decision from OOF predictions of this training set."""
+    if sum(root_id(d) in positive_ids for d in documents) < 3:
+        return set()  # Cross-fitting needs two independent positive references after exclusion.
+    margins=np.full(len(documents),np.nan)
+    labels=np.array([int(root_id(d) in positive_ids) for d in documents])
+    try:
+        splits=group_splits(fp,documents,positive_ids)
+    except ValueError:
+        return set()
+    for train,test in splits:
+        training=[documents[i] for i in train]; testing=[documents[i] for i in test]
+        views=_views(training,fp.config.seed); test_views=_views(testing,fp.config.seed)
+        x,_=_configuration_rows(fp,views,training,positive_ids,'contrast')
+        xt,_=_configuration_rows(fp,test_views,training,positive_ids,'contrast')
+        estimator=_fit_comparison_estimator('logistic_regression',fp.config.seed,x,views,positive_ids)
+        margins[test]=_root_margins(testing,test_views,_margin(estimator,'logistic_regression',xt))
+    calibrator=fit_calibrator(margins,labels,fp.config.seed)
+    scores=calibrator.predict_proba(margins.reshape(-1,1))[:,1]*100
+    thresholds=select_thresholds(labels,scores)
+    rows=[{'root_document_id':root_id(d),'author_id':_author_key(d),'label':int(labels[i]),
+           'compatibility_score':float(scores[i]),'split':'development_oof',
+                         'decision':decision_for_score(scores[i],thresholds['match_threshold'],thresholds['mismatch_threshold'])} for i,d in enumerate(documents)]
+    return {author for author,summary in mark_hard_negatives(rows,thresholds['match_threshold'],thresholds['mismatch_threshold']).items() if summary['hard_negative']}
 
 
 def run_supervised(fp,negatives):
     """Nested author/root OOF evaluation using weighted views and root calibration."""
-    from .corpus import word_count
-    negatives=list({d.clean_text:d for d in negatives}.values())
+    from .corpus import word_count, is_eligible_negative
+    negatives=list({d.clean_text:d for d in negatives if is_eligible_negative(d)}.values())
     positives=list({d.clean_text:d for d in fp.documents if root_id(d) in fp.manifest['historical_document_ids']}.values())
     author_counts=Counter(_author_key(d) for d in negatives if _author_key(d))
     if author_counts and max(author_counts.values()) > len(negatives)/2:
@@ -269,90 +373,117 @@ def run_supervised(fp,negatives):
         kinds.append('lightgbm')
     except (ImportError,OSError):
         fp.manifest['warnings'].append('LightGBM unavailable; install the supervised extra and its native OpenMP runtime to compare it with logistic regression.')
-    predictions={kind:np.full(len(docs),np.nan) for kind in kinds}
-    margins={kind:np.full(len(docs),np.nan) for kind in kinds}
+    fp._evaluation_comparison_cache={}
+    experiments=[(configuration,kind) for configuration in CONFIGURATIONS for kind in kinds]
+    predictions={key:np.full(len(docs),np.nan) for key in experiments}
+    margins={key:np.full(len(docs),np.nan) for key in experiments}
     nested_predictions=np.full(len(docs),np.nan)
     components=np.zeros((len(docs),3))
+    contrasts=np.zeros((len(docs),5))
     folds=[]
     for train,test in group_splits(fp,docs,positive_ids):
         train_docs=[docs[i] for i in train];test_docs=[docs[i] for i in test]
         train_views=_views(train_docs,seed);test_views=_views(test_docs,seed)
-        references=[root_id(d) for d in train_docs if root_id(d) in positive_ids]
-        x_train,names=fp._comparison_rows(train_views,references)
-        x_test,_=fp._comparison_rows(test_views,references)
-        for column,key in enumerate(('authorship_embedding','stylometry','char_ngram')):
-            values=aggregate_root_predictions([root_id(d) for d in test_views],x_test[:,names.index(key)])
-            components[test,column]=[values[root_id(d)]['raw_margin']*100 for d in test_docs]
         inner_splits=group_splits(fp,train_docs,positive_ids)
-        inner_margins={kind:np.full(len(train_docs),np.nan) for kind in kinds}
+        inner_margins={key:np.full(len(train_docs),np.nan) for key in experiments}
+        outer_hard=_training_hard_authors(fp,train_docs,positive_ids)
         for inner_train,inner_test in inner_splits:
             inner_docs=[train_docs[i] for i in inner_train]
             inner_test_docs=[train_docs[i] for i in inner_test]
             inner_views=_views(inner_docs,seed);inner_test_views=_views(inner_test_docs,seed)
-            inner_refs=[root_id(d) for d in inner_docs if root_id(d) in positive_ids]
-            xi,_=fp._comparison_rows(inner_views,inner_refs)
-            xt,_=fp._comparison_rows(inner_test_views,inner_refs)
-            for kind in kinds:
-                estimator=_fit_comparison_estimator(kind,seed,xi,inner_views,positive_ids)
-                inner_margins[kind][inner_test]=_root_margins(inner_test_docs,inner_test_views,_margin(estimator,kind,xt))
+            inner_hard=_training_hard_authors(fp,inner_docs,positive_ids)
+            for configuration in CONFIGURATIONS:
+                xi,_=_configuration_rows(fp,inner_views,inner_docs,positive_ids,configuration)
+                xt,_=_configuration_rows(fp,inner_test_views,inner_docs,positive_ids,configuration)
+                for kind in kinds:
+                    key=(configuration,kind)
+                    estimator=_fit_comparison_estimator(kind,seed,xi,inner_views,positive_ids,inner_hard if configuration=='hard_negative_weighting' else None)
+                    inner_margins[key][inner_test]=_root_margins(inner_test_docs,inner_test_views,_margin(estimator,kind,xt))
         inner_metrics={}
-        for kind in kinds:
-            calibrator=fit_calibrator(inner_margins[kind],labels[train],seed)
-            inner_scores=calibrator.predict_proba(inner_margins[kind].reshape(-1,1))[:,1]
-            inner_metrics[kind]=_classification_metrics(labels[train],inner_scores)
-            estimator=_fit_comparison_estimator(kind,seed,x_train,train_views,positive_ids)
-            margins[kind][test]=_root_margins(test_docs,test_views,_margin(estimator,kind,x_test))
-            predictions[kind][test]=calibrator.predict_proba(margins[kind][test].reshape(-1,1))[:,1]
-        lr=inner_metrics['logistic_regression'];gb=inner_metrics.get('lightgbm',{})
-        nested_kind=choose_verifier(lr['auroc'],gb.get('auroc'),lr['tpr_at_5pct_fpr'],gb.get('tpr_at_5pct_fpr'))
-        nested_predictions[test]=predictions[nested_kind][test]
+        for configuration in CONFIGURATIONS:
+            x_train,names=_configuration_rows(fp,train_views,train_docs,positive_ids,configuration)
+            x_test,_=_configuration_rows(fp,test_views,train_docs,positive_ids,configuration)
+            if configuration=='contrast':
+                for column,name in enumerate(('authorship_embedding','stylometry','char_ngram')):
+                    values=aggregate_root_predictions([root_id(d) for d in test_views],x_test[:,names.index(name)])
+                    components[test,column]=[values[root_id(d)]['raw_margin']*100 for d in test_docs]
+                for column,name in enumerate(('best_negative_author_similarity','median_negative_author_similarity','user_vs_best_negative_gap','user_embedding_similarity','user_vs_median_negative_gap')):
+                    values=aggregate_root_predictions([root_id(d) for d in test_views],x_test[:,names.index(name)])
+                    contrasts[test,column]=[values[root_id(d)]['raw_margin'] for d in test_docs]
+            for kind in kinds:
+                key=(configuration,kind)
+                calibrator=fit_calibrator(inner_margins[key],labels[train],seed)
+                inner_scores=calibrator.predict_proba(inner_margins[key].reshape(-1,1))[:,1]
+                inner_metrics[key]=performance_report(labels[train],inner_scores)
+                estimator=_fit_comparison_estimator(kind,seed,x_train,train_views,positive_ids,outer_hard if configuration=='hard_negative_weighting' else None)
+                margins[key][test]=_root_margins(test_docs,test_views,_margin(estimator,kind,x_test))
+                predictions[key][test]=calibrator.predict_proba(margins[key][test].reshape(-1,1))[:,1]
+        inner_models={}
+        for configuration in CONFIGURATIONS:
+            lr=inner_metrics[(configuration,'logistic_regression')];gb=inner_metrics.get((configuration,'lightgbm'),{})
+            inner_models[configuration]=choose_verifier(lr['auroc'],gb.get('auroc'),lr['tpr_at_5pct_fpr'],gb.get('tpr_at_5pct_fpr'))
+        nested_configuration=choose_configuration({c:inner_metrics[(c,k)] for c,k in inner_models.items()})
+        nested_kind=inner_models[nested_configuration]
+        nested_predictions[test]=predictions[(nested_configuration,nested_kind)][test]
         fold=_fold_metadata(docs,train,test,positive_ids)
-        fold.update(nested_selected_model=nested_kind,selection_document_ids=[root_id(d) for d in train_docs],
-                    inner_selection_auroc={kind:metric['auroc'] for kind,metric in inner_metrics.items()},
+        fold.update(nested_selected_model=nested_kind,nested_selected_configuration=nested_configuration,
+                    selection_document_ids=[root_id(d) for d in train_docs],
+                    inner_selection_auroc={f'{c}/{k}':metric['auroc'] for (c,k),metric in inner_metrics.items()},
                     test_positive_ids=[root_id(docs[i]) for i in test if labels[i]],
                     calibration_training_ids=[root_id(d) for d in train_docs],
+                    negative_reference_document_ids=[root_id(d) for d in train_docs if root_id(d) not in positive_ids],
+                    negative_reference_author_ids=sorted({_author_key(d) for d in train_docs if root_id(d) not in positive_ids and _author_key(d)}),
+                    hard_negative_weighting_author_ids=sorted(outer_hard),
                     training_view_ids=[d.document_id for d in train_views],test_view_ids=[d.document_id for d in test_views],
                     inner_folds=[_fold_metadata(train_docs,it,iv,positive_ids) for it,iv in inner_splits])
         folds.append(fold)
-    model_metrics={kind:_classification_metrics(labels,prediction) for kind,prediction in predictions.items()}
-    lr=model_metrics['logistic_regression'];gb=model_metrics.get('lightgbm',{})
-    selected=choose_verifier(lr['auroc'],gb.get('auroc'),lr['tpr_at_5pct_fpr'],gb.get('tpr_at_5pct_fpr'))
+    experiment_metrics={key:performance_report(labels,prediction) for key,prediction in predictions.items()}
+    configuration_models={}
+    for configuration in CONFIGURATIONS:
+        lr=experiment_metrics[(configuration,'logistic_regression')];gb=experiment_metrics.get((configuration,'lightgbm'),{})
+        configuration_models[configuration]=choose_verifier(lr['auroc'],gb.get('auroc'),lr['tpr_at_5pct_fpr'],gb.get('tpr_at_5pct_fpr'))
+    ablations={c:{**experiment_metrics[(c,k)],'selected_model':k,**CONFIGURATIONS[c]} for c,k in configuration_models.items()}
+    selected_configuration=choose_configuration(ablations)
+    selected=configuration_models[selected_configuration]
+    selected_key=(selected_configuration,selected)
+    model_metrics={kind:experiment_metrics[(selected_configuration,kind)] for kind in kinds}
     views=_views(docs,seed)
     fp.manifest['dataset_counts']['training_views']=len(views)
-    x,names=fp._comparison_rows(views,sorted(positive_ids))
-    estimator=_fit_comparison_estimator(selected,seed,x,views,positive_ids)
-    calibrator=fit_calibrator(margins[selected],labels,seed)
-    fp.verifier={'kind':selected,'estimator':estimator,'calibrator':calibrator,'feature_names':names}
+    x,names=_configuration_rows(fp,views,docs,positive_ids,selected_configuration)
+    hard_authors=_training_hard_authors(fp,docs,positive_ids) if selected_configuration=='hard_negative_weighting' else set()
+    estimator=_fit_comparison_estimator(selected,seed,x,views,positive_ids,hard_authors)
+    calibrator=fit_calibrator(margins[selected_key],labels,seed)
+    fp.verifier={'kind':selected,'estimator':estimator,'calibrator':calibrator,'feature_names':names,
+                 'selected_configuration':selected_configuration,'hard_negative_authors':sorted(hard_authors)}
     fp.manifest['mode']='supervised';fp.evaluation['mode']='supervised'
-    thresholds=select_thresholds(labels,predictions[selected]*100)
+    thresholds=select_thresholds(labels,predictions[selected_key]*100)
     fp.evaluation['thresholds']=thresholds
     fp.manifest.update(match_threshold=thresholds['match_threshold'],mismatch_threshold=thresholds['mismatch_threshold'])
-    operating=performance_report(labels,predictions[selected],threshold=thresholds['match_threshold']/100,
+    operating=performance_report(labels,predictions[selected_key],threshold=thresholds['match_threshold']/100,
                                  mismatch_threshold=None if thresholds['mismatch_threshold'] is None else thresholds['mismatch_threshold']/100)
     model_metrics[selected].update(operating)
     held_out=[]
     view_counts=Counter(root_id(d) for d in views)
     for index,doc in enumerate(docs):
-        score=float(predictions[selected][index]*100)
+        score=float(predictions[selected_key][index]*100)
         held_out.append({'document_id':root_id(doc),'root_document_id':root_id(doc),'label':int(labels[index]),
-                         'score':score/100,'compatibility_score':score,'raw_margin':float(margins[selected][index]),
+                         'score':score/100,'compatibility_score':score,'raw_margin':float(margins[selected_key][index]),
                          'author':doc.author,'author_id':_author_key(doc),'source_url':(doc.metadata or {}).get('source_url'),
                          'genre':(doc.metadata or {}).get('genre','unknown'),'source':(doc.metadata or {}).get('genre','unknown'),
-                         'split':'development','word_count':word_count(doc.clean_text),'view_count':view_counts[root_id(doc)],
+                         'split':'development_oof','source_type':(doc.metadata or {}).get('source_type'),'word_count':word_count(doc.clean_text),'view_count':view_counts[root_id(doc)],
                          'embedding_score':float(components[index,0]),'stylometry_score':float(components[index,1]),'character_score':float(components[index,2]),
+                         'best_negative_author_similarity':float(contrasts[index,0]),'median_negative_author_similarity':float(contrasts[index,1]),'user_vs_best_negative_gap':float(contrasts[index,2]),
+                         'user_embedding_similarity':float(contrasts[index,3]),'user_vs_median_negative_gap':float(contrasts[index,4]),
                          'decision':decision_for_score(score,thresholds['match_threshold'],thresholds['mismatch_threshold'])})
-    per_author={}
-    for author in sorted(known_authors):
-        rows=[row for row in held_out if not row['label'] and row['author_id']==author]
-        scores=[row['compatibility_score'] for row in rows]
-        per_author[author]={'documents':len(rows),'mean_compatibility':float(np.mean(scores)),
-                            'median_compatibility':float(np.median(scores)),'maximum_compatibility':max(scores),
-                            'false_acceptance_rate':float(np.mean([row['decision']=='MATCH' for row in rows]))}
+    per_author=mark_hard_negatives(held_out,thresholds['match_threshold'],thresholds['mismatch_threshold'])
     fp.evaluation['negative_diagnostics']=[{'role':'development','author_id':row['author_id'],
                                            'root_document_id':row['root_document_id'],'source':row['source'],'word_count':row['word_count'],
                                            'score':row['compatibility_score'],'raw_margin':row['raw_margin'],
                                            'embedding':row['embedding_score'],'stylometry':row['stylometry_score'],'character':row['character_score'],
-                                           'decision':row['decision']} for row in held_out if not row['label']]
+                                           'decision':row['decision'],'source_type':row['source_type'],'hard_negative':row['hard_negative'],
+                                           'best_negative_author_similarity':row['best_negative_author_similarity'],
+                                           'median_negative_author_similarity':row['median_negative_author_similarity'],
+                                           'user_vs_best_negative_gap':row['user_vs_best_negative_gap']} for row in held_out if not row['label']]
     importance=abs(estimator[-1].coef_[0]).tolist() if selected=='logistic_regression' else estimator.feature_importances_.astype(float).tolist()
     train_root_margins=_root_margins(docs,views,_margin(estimator,selected,x))
     train_scores=calibrator.predict_proba(train_root_margins.reshape(-1,1))[:,1]
@@ -360,7 +491,8 @@ def run_supervised(fp,negatives):
     for index,doc in enumerate(docs):
         if labels[index]:
             genres[(doc.metadata or {}).get('genre','unknown')].append(index)
-    fp.evaluation['supervised']={'models':model_metrics,'selected_model':selected,'metrics':model_metrics[selected],
+    fp.evaluation['supervised']={'models':model_metrics,'selected_model':selected,'metrics':model_metrics[selected],'ablations':ablations,'selected_configuration':selected_configuration,
+        'per_negative_source_type':source_type_diagnostics(held_out),
         'nested_selection_metrics':performance_report(labels,nested_predictions,threshold=thresholds['match_threshold']/100, mismatch_threshold=None if thresholds['mismatch_threshold'] is None else thresholds['mismatch_threshold']/100),
         'training_performance':performance_report(labels,train_scores,threshold=thresholds['match_threshold']/100, mismatch_threshold=None if thresholds['mismatch_threshold'] is None else thresholds['mismatch_threshold']/100),
         'cv_method':'Nested stratified root/author cross-validation; root median margins and calibration restricted to outer training folds',
@@ -368,9 +500,10 @@ def run_supervised(fp,negatives):
         'positive_genre_weighting':'equal root document weight across positive sources','negative_grouping':fp.manifest['negative_grouping'],
         'folds':folds,'selection_margin_auroc':.02,'feature_importance':dict(zip(names,importance)),
         'held_out_scores':held_out,'per_positive_genre':{genre:{'documents':len(indices),
-            'mean_compatibility':float(np.mean(predictions[selected][indices])*100),
-            'accept_rate_at_match_threshold':float(np.mean(predictions[selected][indices]*100>=thresholds['match_threshold']))} for genre,indices in genres.items()},
+            'mean_compatibility':float(np.mean(predictions[selected_key][indices])*100),
+            'accept_rate_at_match_threshold':float(np.mean(predictions[selected_key][indices]*100>=thresholds['match_threshold']))} for genre,indices in genres.items()},
         'negative_author_counts':{author:sum(_author_key(d)==author for d in negatives) for author in sorted(known_authors)},
         'per_negative_author':per_author,'independent_documents':len(docs),'generated_training_views':len(views),
         'limitations':['Model selection and reported metrics share grouped development validation; these are exploratory, not an independent final test.',
                        'Calibration uses root-level out-of-fold margins; no in-sample substitution is permitted.']}
+    del fp._evaluation_comparison_cache

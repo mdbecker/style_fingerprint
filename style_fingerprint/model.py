@@ -12,14 +12,14 @@ import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from .config import Config, VERSION, FEATURE_SCHEMA_VERSION, PREPROCESSING_VERSION, ENCODING_VERSION, WEIGHTS
-from .corpus import Document, Passage, load_corpus, load_work_corpus, load_email_corpus, clean_email, clean_markdown, chunk_text, word_count, sentence_spans
+from .corpus import NEGATIVE_CORPUS_POLICY, load_negative_corpus, Document, Passage, load_corpus, load_work_corpus, load_email_corpus, clean_email, clean_markdown, chunk_text, word_count, sentence_spans
 from .embeddings import AuthorshipEncoder, cache_key, cosine_matrix, symmetric_maxsim
 from .holdout import split_holdout, source as document_source, label as document_label
 from .features import extract_features, stylometry_similarity, deviations, normalize_similarity, evidence_strength
 
 
 def _document_structure(document):
-    return document.clean_text if (document.metadata or {}).get('genre', '').endswith('_email') else document.raw_markdown
+    return document.clean_text if document.source_type == 'email' or (document.metadata or {}).get('genre', '').endswith('_email') else document.raw_markdown
 
 
 def _genre_indices(documents, positive_ids):
@@ -95,7 +95,7 @@ class StyleFingerprint:
         frozen_evaluation = None
         prior_frozen = json.loads((artifact_dir / 'evaluation_config.json').read_text()) if (artifact_dir / 'evaluation_config.json').exists() else {}
         if build_mode == 'production':
-            if not (artifact_dir / 'evaluation_config.json').exists():
+            if not (artifact_dir / 'evaluation_config.json').exists() or prior_frozen.get('negative_corpus_policy') != NEGATIVE_CORPUS_POLICY or prior_frozen.get('feature_schema_version') != FEATURE_SCHEMA_VERSION:
                 cls.build(corpus_dir, artifact_dir, config=config, negative_dir=negative_dir,
                           work_dir=work_dir, gmail_dir=gmail_dir, primary_test_dir=primary_test_dir,
                           holdout_fraction=holdout_fraction, holdout_manifest=holdout_manifest,
@@ -121,11 +121,14 @@ class StyleFingerprint:
         if len({d.document_id for d in documents}) != len(documents):
             raise ValueError('Positive document IDs collide with reserved work/ or gmail/ namespaces; rename those blog files.')
         negative_root = Path(negative_dir) if negative_dir is not None else Path(corpus_dir).parent / 'negative_posts'
-        negatives = load_corpus(negative_root) if negative_root.exists() and any(p.suffix.lower() in {'.md','.markdown','.mdown'} for p in negative_root.rglob('*')) else []
+        negatives = load_negative_corpus(negative_root) if negative_root.exists() else []
         for d in negatives:
             d.document_id = 'negative/' + d.document_id
             d.root_document_id = d.document_id
             d.metadata = dict(d.metadata or {}, genre='negative_posts')
+        negative_hashes = {d.root_document_id: d.file_hash for d in negatives}
+        if frozen is not None and frozen.get('negative_corpus_hashes') != negative_hashes:
+            raise ValueError('Eligible negative inputs changed; run evaluation before production refitting')
         sealed_ids = set(prior_frozen.get('sealed_holdout_ids', []))
         newly_sealed = set()
         if holdout_manifest is not None:
@@ -219,7 +222,7 @@ class StyleFingerprint:
         independent_negatives = len({d.clean_text for d in negatives})
         if negatives and independent_negatives < independent:
             messages.append(f'Negative corpus has {independent_negatives} independent documents versus {independent} positives; add more real negative documents.')
-        manifest = {'package_version': VERSION, 'feature_schema_version': FEATURE_SCHEMA_VERSION,
+        manifest = {'negative_corpus_hashes': negative_hashes, 'negative_corpus_policy': NEGATIVE_CORPUS_POLICY, 'package_version': VERSION, 'feature_schema_version': FEATURE_SCHEMA_VERSION,
                     'preprocessing_version': PREPROCESSING_VERSION, 'encoding_version': ENCODING_VERSION,
                     'model_id': config.model_id, 'model_revision': config.model_revision,
                     'configuration': asdict(config), 'random_seed': config.seed,
@@ -287,7 +290,7 @@ class StyleFingerprint:
         stamp = datetime.now(timezone.utc).isoformat()
         self.manifest['evaluation_timestamp'] = stamp
         thresholds = self.evaluation.get('thresholds', {})
-        frozen = {'selected_model': self.verifier['kind'] if self.verifier else 'reference_similarity',
+        frozen = {'negative_corpus_hashes': self.manifest['negative_corpus_hashes'], 'negative_corpus_policy': NEGATIVE_CORPUS_POLICY, 'selected_model': self.verifier['kind'] if self.verifier else 'reference_similarity',
                   'feature_schema_version': FEATURE_SCHEMA_VERSION,
                   'selected_feature_schema': self.verifier['feature_names'] if self.verifier else [],
                   'view_generation_version': self.manifest['view_generation_version'],
@@ -301,6 +304,8 @@ class StyleFingerprint:
                   'sealed_holdout_ids': self.manifest.get('sealed_holdout_ids', []),
                   'evaluation_dataset_counts': dict(self.manifest['dataset_counts'])}
         if self.verifier:
+            frozen['selected_configuration'] = self.verifier.get('selected_configuration', 'contrast')
+            frozen['hard_negative_authors'] = self.verifier.get('hard_negative_authors', [])
             cal = self.verifier['calibrator']
             frozen['calibration_coefficients'] = cal.coef_.tolist()
             frozen['calibration_intercept'] = cal.intercept_.tolist()
@@ -325,23 +330,29 @@ class StyleFingerprint:
         from sklearn.linear_model import LogisticRegression
         views = [view for doc in self.documents for view in generate_training_views(doc, seed=self.config.seed)]
         positive_ids = set(self.manifest['historical_document_ids'])
-        x, names = self._comparison_rows(views, sorted(positive_ids))
-        if names != frozen['selected_feature_schema']:
+        x, all_names = self._comparison_rows(views, sorted(positive_ids))
+        names = frozen['selected_feature_schema']
+        if not set(names) <= set(all_names):
             raise ValueError('Frozen feature schema differs from production features')
-        estimator = _fit_comparison_estimator(frozen['selected_model'], self.config.seed, x, views, positive_ids)
+        x = x[:, [all_names.index(name) for name in names]]
+        estimator = _fit_comparison_estimator(frozen['selected_model'], self.config.seed, x, views, positive_ids, hard_negative_authors=frozen.get('hard_negative_authors', []))
         calibrator = LogisticRegression()
         calibrator.classes_ = np.array([0, 1])
         calibrator.coef_ = np.asarray(frozen['calibration_coefficients'])
         calibrator.intercept_ = np.asarray(frozen['calibration_intercept'])
         calibrator.n_features_in_ = 1
         self.verifier = {'kind': frozen['selected_model'], 'estimator': estimator,
-                         'calibrator': calibrator, 'feature_names': names}
+                         'calibrator': calibrator, 'feature_names': names,
+                         'selected_configuration': frozen.get('selected_configuration', 'contrast'),
+                         'hard_negative_authors': frozen.get('hard_negative_authors', [])}
         self.manifest['mode'] = 'supervised'
         self.manifest['dataset_counts']['training_views'] = len(views)
 
-    def _comparison_rows(self, documents, reference_ids):
+    def _comparison_rows(self, documents, reference_ids, *, negative_reference_ids=None, include_contrast=True, include_character=True):
         rows = []
         names = None
+        if negative_reference_ids is None:
+            negative_reference_ids = [d.root_document_id for d in self.documents if d.document_id not in self.manifest['historical_document_ids']]
         for doc in documents:
             root = doc.root_document_id
             refs = [i for i in reference_ids if i != root]
@@ -349,6 +360,10 @@ class StyleFingerprint:
             embeddings = self._embed(passages)
             signals, features, scores, reference = self._compare(doc.clean_text, _document_structure(doc), passages, embeddings, refs, [p.text for p in passages])
             vector = self._comparison_features(signals, features, scores, reference, word_count(doc.clean_text), len(passages))
+            if include_contrast:
+                vector.update(self._negative_contrast(embeddings, negative_reference_ids, signals['authorship_embedding'], excluded_root=root, excluded_author=doc.author_id))
+            if not include_character:
+                vector.pop('char_ngram', None)
             names = list(vector)
             rows.append(list(vector.values()))
         return np.array(rows), names
@@ -363,8 +378,34 @@ class StyleFingerprint:
         vector.update({f"deviation_{d['feature']}": float(np.clip(d['robust_z'], -10, 10)) for d in deviations(features, reference['features'])})
         return vector
 
-    def _supervised_score(self, signals, features, doc_scores, reference, words, passages):
+    def _negative_contrast(self, embeddings, negative_ids, user_similarity, *, excluded_root=None, excluded_author=None):
+        """Compare a candidate to one multi-vector bank per independent negative author."""
+        from .corpus import is_eligible_negative
+        docs = {d.root_document_id: d for d in self.documents}
+        groups = defaultdict(list)
+        positive_ids = set(self.manifest['historical_document_ids'])
+        for index, passage in enumerate(self.passages):
+            root = passage.root_document_id
+            doc = docs.get(root)
+            if root not in negative_ids or root in positive_ids or root == excluded_root or doc is None:
+                continue
+            if not is_eligible_negative(doc):
+                continue
+            author = str(doc.author_id or '').strip().casefold()
+            if not author or (excluded_author is not None and author == str(excluded_author).strip().casefold()):
+                continue
+            groups[author].append(index)
+        similarities = [symmetric_maxsim(embeddings, self.embeddings[indices]) for indices in groups.values()]
+        best = float(max(similarities)) if similarities else 0.
+        median = float(np.median(similarities)) if similarities else 0.
+        return {'user_embedding_similarity': float(user_similarity),
+                'best_negative_author_similarity': best, 'median_negative_author_similarity': median,
+                'user_vs_best_negative_gap': float(user_similarity-best),
+                'user_vs_median_negative_gap': float(user_similarity-median)}
+
+    def _supervised_score(self, signals, features, doc_scores, reference, words, passages, contrast=None):
         vector = self._comparison_features(signals, features, doc_scores, reference, words, passages)
+        vector.update(contrast or reference.get('negative_contrast', {}))
         x = np.array([[vector[name] for name in self.verifier['feature_names']]])
         estimator, kind = self.verifier['estimator'], self.verifier['kind']
         margin = _margin(estimator, kind, x)
@@ -407,7 +448,11 @@ class StyleFingerprint:
                 {'role': row['split'], 'author_id': row['author_id'], 'root_document_id': row['root_document_id'],
                  'source': row['source'], 'word_count': row['word_count'], 'score': row['compatibility_score'],
                  'raw_margin': row['raw_margin'], 'embedding': row['embedding_score'],
-                 'stylometry': row['stylometry_score'], 'character': row['character_score'], 'decision': row['decision']}
+                 'stylometry': row['stylometry_score'], 'character': row['character_score'], 'decision': row['decision'],
+                 'source_type': row['source_type'], 'hard_negative': row['hard_negative'],
+                 'best_negative_author_similarity': row['best_negative_author_similarity'],
+                 'median_negative_author_similarity': row['median_negative_author_similarity'],
+                 'user_vs_best_negative_gap': row['user_vs_best_negative_gap']}
                 for row in predictions if row['label'] == 0]
             from .report import write_html_report
             write_html_report(self.evaluation, self.manifest, directory / 'report.html')
@@ -422,7 +467,9 @@ class StyleFingerprint:
         """Whitelist root diagnostics; never serialize prose into evaluation tables."""
         from .corpus import generate_training_views
         keys = ['root_document_id','author_id','source','label','split','word_count','view_count',
-                'embedding_score','stylometry_score','character_score','raw_margin','compatibility_score','score','decision']
+                'embedding_score','stylometry_score','character_score','raw_margin','compatibility_score','score','decision',
+                'source_type','user_embedding_similarity','best_negative_author_similarity',
+                'median_negative_author_similarity','user_vs_best_negative_gap','user_vs_median_negative_gap','hard_negative']
         rows = []
         development = self.evaluation.get('supervised', {}).get('held_out_scores', [])
         if development:
@@ -436,7 +483,7 @@ class StyleFingerprint:
                 doc = docs[fold['candidate_document_id']]
                 comp = fold['raw_components']
                 rows.append(dict(root_document_id=doc.root_document_id, author_id=doc.author_id,
-                                 source=document_source(doc), label=1, split='development',
+                                 source=document_source(doc), label=1, split='development_oof',
                                  word_count=word_count(doc.clean_text), view_count=len(generate_training_views(doc, seed=self.config.seed)),
                                  embedding_score=comp['authorship_embedding']*100, stylometry_score=comp['stylometry']*100,
                                  character_score=comp['char_ngram']*100, raw_margin=fold['score']/100,
@@ -444,10 +491,11 @@ class StyleFingerprint:
             for doc in self.documents:
                 if document_label(doc):
                     continue
-                result = self.score(doc.raw_markdown, explain=False)
+                result = self.score(doc.clean_text if doc.source_type == 'email' else doc.raw_markdown, explain=False,
+                                    input_format='email' if doc.source_type == 'email' else 'markdown')
                 comp = result.diagnostics['raw_components']
                 rows.append(dict(root_document_id=doc.root_document_id, author_id=doc.author_id,
-                                 source=document_source(doc), label=0, split='development',
+                                 source=document_source(doc), label=0, split='development_oof',
                                  word_count=result.word_count, view_count=len(generate_training_views(doc, seed=self.config.seed)),
                                  embedding_score=comp['authorship_embedding']*100, stylometry_score=comp['stylometry']*100,
                                  character_score=comp['char_ngram']*100, raw_margin=result.raw_score,
@@ -457,11 +505,35 @@ class StyleFingerprint:
             doc = held_docs[item['document_id']]
             comp = item['raw_component_scores']
             rows.append(dict(root_document_id=doc.root_document_id, author_id=doc.author_id,
-                             source=item['source'], label=item['label'], split='holdout',
+                             source=item['source'], label=item['label'], split='historical_holdout',
                              word_count=item['usable_words'], view_count=len(generate_training_views(doc, seed=self.config.seed)),
                              embedding_score=comp['authorship_embedding']*100, stylometry_score=comp['stylometry']*100,
                              character_score=comp['char_ngram']*100, raw_margin=item['raw_margin'],
                              compatibility_score=item['score'], score=item['score'], decision=item['decision']))
+        # Preserve source-root inventory while duplicates share one independent OOF observation.
+        if development:
+            by_root = {row['root_document_id']: row for row in rows}
+            docs_by_root = {doc.root_document_id: doc for doc in self.documents}
+            by_prose = {docs_by_root[root].clean_text: row for root, row in by_root.items() if root in docs_by_root}
+            for doc in self.documents:
+                if doc.root_document_id in by_root or doc.clean_text not in by_prose:
+                    continue
+                row = dict(by_prose[doc.clean_text], root_document_id=doc.root_document_id,
+                           author_id=doc.author_id, source=document_source(doc),
+                           word_count=word_count(doc.clean_text),
+                           view_count=len(generate_training_views(doc, seed=self.config.seed)))
+                rows.append(row)
+        all_docs = {d.root_document_id: d for d in self.documents}
+        all_docs.update({d.root_document_id: d for d in held_docs.values()})
+        for row in rows:
+            row['split'] = {'development': 'development_oof', 'holdout': 'historical_holdout'}.get(row['split'], row['split'])
+            row.setdefault('hard_negative', False)
+            doc = all_docs.get(row['root_document_id'])
+            row['source_type'] = getattr(doc, 'source_type', None)
+            if doc is not None and row.get('best_negative_author_similarity') is None:
+                passages = chunk_text(doc.clean_text, doc.document_id)
+                negative_ids = [d.root_document_id for d in self.documents if not document_label(d)]
+                row.update(self._negative_contrast(self._embed(passages), negative_ids, row['embedding_score']/100, excluded_root=doc.root_document_id, excluded_author=doc.author_id))
         return [{key:row.get(key) for key in keys} for row in rows]
 
     @classmethod
@@ -469,7 +541,8 @@ class StyleFingerprint:
         directory = Path(artifact_dir)
         try:
             manifest = json.loads((directory / 'manifest.json').read_text())
-            if (manifest['feature_schema_version'] != FEATURE_SCHEMA_VERSION
+            if (manifest.get('negative_corpus_policy') != NEGATIVE_CORPUS_POLICY
+                    or manifest['feature_schema_version'] != FEATURE_SCHEMA_VERSION
                     or manifest['package_version'] != VERSION
                     or manifest['preprocessing_version'] != PREPROCESSING_VERSION
                     or manifest['encoding_version'] != ENCODING_VERSION):
@@ -546,6 +619,8 @@ class StyleFingerprint:
         signals = {'authorship_embedding': float(np.median(list(document_scores.values()))),
                    'stylometry': stylometry_similarity(features, reference['features']),
                    'char_ngram': float(np.median(char_scores))}
+        negative_ids = [d.root_document_id for d in self.documents if d.document_id not in self.manifest['historical_document_ids']]
+        reference = dict(reference, negative_contrast=self._negative_contrast(embeddings, negative_ids, signals['authorship_embedding']))
         return signals, features, document_scores, reference
 
     def _calibration(self, ids):
@@ -624,15 +699,16 @@ class StyleFingerprint:
         docs = [Document(**row) for row in self.manifest.get('holdout_documents', [])]
         rows = []
         for doc in docs:
-            result = self.score(doc.raw_markdown, explain=False,
-                                input_format='email' if document_source(doc) in {'work_corpus','gmail_corpus'} else 'markdown')
+            result = self.score(doc.clean_text if doc.source_type == 'email' else doc.raw_markdown, explain=False,
+                                input_format='email' if doc.source_type == 'email' or document_source(doc) in {'work_corpus','gmail_corpus'} else 'markdown')
             rows.append({'document_id': doc.document_id, 'source': document_source(doc),
                          'label': document_label(doc), 'score': result.score,
                          'evidence_strength': result.evidence_strength, 'usable_words': result.word_count,
                          'decision': result.decision, 'raw_margin': result.raw_score,
                          'author_id': doc.author_id, 'root_document_id': doc.root_document_id,
                          'component_scores': result.component_scores,
-                         'raw_component_scores': result.diagnostics['raw_components']})
+                         'raw_component_scores': result.diagnostics['raw_components'],
+                         'negative_contrast': result.diagnostics['negative_contrast']})
             if not document_label(doc):
                 self.evaluation.setdefault('negative_diagnostics', [])
                 diagnostic = {'role': 'holdout', 'author_id': doc.author_id, 'root_document_id': doc.root_document_id,
@@ -733,6 +809,7 @@ class StyleFingerprint:
         if np.ptp(list(components.values())) >= .65:
             notices.append('Extreme component disagreement: evidence strength downgraded one level; topic/genre may affect similarities.')
         result.diagnostics = {'mode': self.manifest['mode'], 'input_format': input_format, 'warnings': notices, 'raw_components': signals,
+                              'negative_contrast': ref['negative_contrast'],
                               'passage_count': len(passages), 'sentence_deletions_evaluated': 0,
                               'contributions': {k: 100*WEIGHTS[k]*components[k] for k in WEIGHTS}}
         if attribution is not None:

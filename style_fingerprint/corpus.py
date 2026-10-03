@@ -7,6 +7,8 @@ import re
 import random
 import yaml
 
+NEGATIVE_CORPUS_POLICY = 'human-email-technical-blog-v1'
+
 WORD_RE = re.compile(r"\b[\w]+(?:['’][\w]+)*\b", re.UNICODE)
 
 
@@ -21,8 +23,11 @@ class Document:
     metadata: dict | None = None
     root_document_id: str | None = None
     author_id: str | None = None
+    source_type: str | None = None
 
     def __post_init__(self):
+        if self.source_type is None:
+            self.source_type = (self.metadata or {}).get('source_type')
         if self.root_document_id is None:
             self.root_document_id = self.document_id
         if self.author_id is None:
@@ -135,6 +140,94 @@ def load_corpus(directory):
     return docs
 
 
+def negative_source_type(metadata, relative_path=''):
+    """Validate selected provenance; genre is diagnostic metadata, never a predictor.
+
+    Unlabelled Markdown remains compatible with manually curated technical blogs.
+    Explicit exclusions and recognizable legacy specification provenance override
+    an eligible label, so relabelling a PEP cannot admit it.
+    """
+    kind = str(metadata.get('source_type') or metadata.get('genre') or '').lower()
+    if kind and kind not in {'email', 'technical_blog', 'blog', 'negative_posts'}:
+        return None
+    if str(metadata.get('human_authored', True)).lower() in {'false', '0', 'no'}:
+        return None
+    provenance = ' '.join(str(metadata.get(key, '')) for key in
+                          ('source_url', 'download_url', 'repository_url', 'source_path', 'author_id', 'title'))
+    provenance += ' ' + str(relative_path)
+    if re.search(r'(?i)(?:python[-/]peps|peps\.python\.org|\bpep[-_:/ ]*\d|\bpep-[a-z]|\brfc[-_:/ ]*\d|\b(?:specifications?|standards?|api[-_ ]?docs?|reference[-_ ]manuals?)\b)', provenance):
+        return None
+    if kind == 'email' or 'email' in Path(relative_path).parts:
+        return 'email'
+    return 'technical_blog'
+
+
+def is_eligible_negative(document):
+    """Apply corpus policy to loaded roots or caller-supplied negative documents."""
+    metadata = dict(document.metadata or {})
+    if document.source_type and 'source_type' not in metadata:
+        metadata['source_type'] = document.source_type
+    if document.author_id and 'author_id' not in metadata:
+        metadata['author_id'] = document.author_id
+    provenance = document.document_id + ' ' + document.source_file
+    if negative_source_type(metadata, provenance) is None:
+        return False
+    _, body = split_frontmatter(document.raw_markdown or document.clean_text)
+    return not re.search(r'(?im)^\s*(?:PEP|RFC):?\s*\d+', body[:2000])
+
+
+def clean_negative_email(text, author=''):
+    """Keep newly written human prose, excluding common automatic email tails."""
+    _, body = split_frontmatter(text)
+    body = re.sub(r'(?is)<blockquote\b[^>]*>.*?</blockquote>', '', body)
+    body = re.sub(r'(?is)<(pre|code)\b[^>]*>.*?</\1>', '', body)
+    body = re.sub(r'(?ms)^\s*(```|~~~)[^\n]*\n.*?^\s*\1[^\n]*$', '', body)
+    body = re.sub(r'(?is)<(script|style)\b[^>]*>.*?</\1>', '', body)
+    body = re.sub(r'(?i)<(?:br\s*/?|/?(?:p|div|li))\b[^>]*>', '\n', body)
+    body = html.unescape(re.sub(r'<[^>]+>', '', body)).lstrip()
+    body = re.split(r'(?im)^\s*(?:Begin forwarded message:|Forwarded message:|Sent from my |(?:Best regards|Kind regards|Regards|Sincerely|Cheers)[,!]?\s*$|(?:This (?:email|message)|Confidentiality notice|LEGAL DISCLAIMER).*?(?:confidential|intended recipient|disclaimer)|.*?Unsubscribe|.*?Manage (?:your )?(?:preferences|subscription))', body)[0]
+    prose = []
+    for line in clean_email(body, author).splitlines():
+        if re.match(r'^\s*(?:wrote:\s*$|>>>|\.\.\.|\$|In \[\d+\]|Out\[\d+\]|Traceback|File "|#include|def |class |import |from \w+ import|@\w+(?:\.|\(|$))', line):
+            continue
+        if len(re.findall(r'[{}=<>\[\]_;]', line)) > max(5, len(line.split()) * .7):
+            continue
+        prose.append(line)
+    return re.sub(r'\n{3,}', '\n\n', '\n'.join(prose)).strip()
+
+
+def load_negative_corpus(directory):
+    root = Path(directory)
+    docs = []
+    for path in sorted(root.rglob('*')):
+        if not path.is_file() or path.suffix.lower() not in {'.md', '.markdown', '.mdown', '.txt'}:
+            continue
+        raw = path.read_text(encoding='utf-8')
+        metadata, _ = split_frontmatter(raw)
+        relative = path.relative_to(root).as_posix()
+        kind = negative_source_type(metadata, relative)
+        _, body = split_frontmatter(raw)
+        if re.search(r'(?im)^\s*(?:PEP|RFC):?\s*\d+', body[:2000]):
+            continue
+        if kind is None or (path.suffix.lower() == '.txt' and kind != 'email'):
+            continue
+        metadata = {str(k): str(v) for k, v in metadata.items()}
+        metadata['source_type'] = kind
+        author = metadata.get('author')
+        if 'author_id' not in metadata:
+            identity = author or (path.parent.name if path.parent != root else None)
+            if identity:
+                metadata['author_id'] = identity
+        clean = clean_negative_email(raw, author or '') if kind == 'email' else clean_markdown(raw)
+        if not word_count(clean):
+            raise ValueError(f'{path}: no usable prose')
+        document = Document(relative, str(path.resolve()), raw, clean,
+                            hashlib.sha256(path.read_bytes()).hexdigest(), author, metadata)
+        if is_eligible_negative(document):
+            docs.append(document)
+    return docs
+
+
 def clean_email(text, author='Michael Becker'):
     """Conservative plain-text email cleaning; do not infer missing thread dates."""
     _, text = split_frontmatter(text)
@@ -148,7 +241,7 @@ def clean_email(text, author='Michael Becker'):
         stripped = line.strip()
         if re.match(r'^(?:On .+wrote:|[-_]{2,}\s*(?:Original Message|Forwarded message))', stripped, re.I):
             break
-        if stripped == '--' or (stripped == author and word_count('\n'.join(lines[index:])) <= 80 and any(
+        if stripped == '--' or (author and stripped == author and word_count('\n'.join(lines[index:])) <= 80 and any(
                 re.search(r'(?i)(?:scientist|engineer|manager|director|Email:|@)', item)
                 for item in lines[index + 1:index + 5])):
             break

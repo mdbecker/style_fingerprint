@@ -1,6 +1,6 @@
 # Negative source inventory
 
-Distinct source documents. One sentence-complete excerpt per document; no extra examples are created from chunks. Each Markdown file and the corpus manifest retain full provenance and license evidence.
+Public source attribution, including removed historical sources. One sentence-complete excerpt per document; no extra examples are created from chunks. Each Markdown file and the corpus manifest retain full provenance and license evidence.
 
 | Document | Credited author | Date | Whitespace words | License |
 |---|---|---|---:|---|
@@ -16,6 +16,47 @@ Distinct source documents. One sentence-complete excerpt per document; no extra 
 | [A Visual Guide to Using BERT for the First Time](https://jalammar.github.io/a-visual-guide-to-using-bert-for-the-first-time/) | Jay Alammar | 2019-11-26 | 492 | CC-BY-NC-SA-4.0 |
 | [Variational Autoencoders, Very Simply](https://colah.github.io/posts/2018-08-simple-VAE/) | Christopher Olah | 2018-08 | 597 | CC-BY-4.0 |
 | [Why Momentum Really Works](https://distill.pub/2017/momentum/) | Gabriel Goh | 2017-04-04 | 692 | CC-BY-4.0 |
+
+## Additional local training sources
+
+Copyrighted training bodies are downloaded into the ignored `negative_posts/local/` tree. This table records public blog attribution only; source snapshots, source/excerpt hashes and complete email selectors remain in ignored acquisition inventories. No redistribution permission is assumed for these article bodies. Existing licensed samples retain their original terms.
+
+| Article | Author | Date | Storage/rights |
+|---|---|---|---|
+| [The Unreasonable Effectiveness of Recurrent Neural Networks](https://karpathy.github.io/2015/05/21/rnn-effectiveness/) | Andrej Karpathy | 2015-05-21 | Ignored local training input; copyright retained |
+| [Deep Reinforcement Learning: Pong from Pixels](https://karpathy.github.io/2016/05/31/rl/) | Andrej Karpathy | 2016-05-31 | Ignored local training input; copyright retained |
+| [A Recipe for Training Neural Networks](https://karpathy.github.io/2019/04/25/recipe/) | Andrej Karpathy | 2019-04-25 | Ignored local training input; copyright retained |
+| [Attention? Attention! | Lil'Log](https://lilianweng.github.io/posts/2018-06-24-attention/) | Lilian Weng | 2018-06-24 | Ignored local training input; copyright retained |
+| [A (Long) Peek into Reinforcement Learning | Lil'Log](https://lilianweng.github.io/posts/2018-02-19-rl-overview/) | Lilian Weng | 2018-02-19 | Ignored local training input; copyright retained |
+| [An overview of gradient descent optimization algorithms](https://www.ruder.io/optimizing-gradient-descent/) | Sebastian Ruder | 2016-01-19 | Ignored local training input; copyright retained |
+| [An Overview of Multi-Task Learning for Deep Learning](https://www.ruder.io/multi-task/) | Sebastian Ruder | 2017-05-29 | Ignored local training input; copyright retained |
+| [GANs are Broken in More than One Way: The Numerics of GANs](https://www.inference.vc/my-notes-on-the-numerics-of-gans/) | Ferenc Huszar | 2017-10-05 | Ignored local training input; copyright retained |
+| [Thanksgiving Special 🦃: GANs are Being Fixed in More than One Way](https://www.inference.vc/gans-are-being-fixed-in-more-than-one-way/) | Ferenc Huszar | 2017-11-23 | Ignored local training input; copyright retained |
+| [Deep Reinforcement Learning Doesn't Work Yet](https://www.alexirpan.com/2018/02/14/rl-hard.html) | Alex Irpan | 2018-02-14 | Ignored local training input; copyright retained |
+| [AlphaGo vs Lee Sedol: Post Match Commentaries](https://www.alexirpan.com/2016/03/17/alphago-lsd.html) | Alex Irpan | 2016-03-17 | Ignored local training input; copyright retained |
+| [A Neural Network in 11 lines of Python (Part 1) - i am trask](https://iamtrask.github.io/2015/07/12/basic-python-network/) | Andrew Trask | 2015-07-12 | Ignored local training input; copyright retained |
+| [Deep Learning without Backpropagation - i am trask](https://iamtrask.github.io/2017/03/21/synthetic-gradients/) | Andrew Trask | 2017-03-21 | Ignored local training input; copyright retained |
+| [Deep learning for... chess · Erik Bernhardsson](https://erikbern.com/2014/11/29/deep-learning-for-chess.html) | Erik Bernhardsson | 2014-11-29 | Ignored local training input; copyright retained |
+| [Analyzing 50k fonts using deep neural networks · Erik Bernhardsson](https://erikbern.com/2016/01/21/analyzing-50k-fonts-using-deep-neural-networks.html) | Erik Bernhardsson | 2016-01-21 | Ignored local training input; copyright retained |
+| [Conditional Random Fields as Deep Learning Models? — Graduate Descent](https://timvieira.github.io/blog/conditional-random-fields-as-deep-learning-models/) | Tim Vieira | 2015-02-05 | Ignored local training input; copyright retained |
+| [Counterfactual Reasoning and Learning from Logged Data — Graduate Descent](https://timvieira.github.io/blog/counterfactual-reasoning-and-learning-from-logged-data/) | Tim Vieira | 2016-12-19 | Ignored local training input; copyright retained |
+| [Make It Happen – arg min blog](https://archives.argmin.net/2018/01/29/taxonomy/) | Benjamin Recht | 2018-01-29 | Ignored local training input; copyright retained |
+| [The Perceptron as a prototype for machine learning theory. – arg min blog](https://archives.argmin.net/2021/11/04/perceptron/) | Benjamin Recht | 2021-11-04 | Ignored local training input; copyright retained |
+| [Word2Vec Tutorial - The Skip-Gram Model · Chris McCormick](https://mccormickml.com/2016/04/19/word2vec-tutorial-the-skip-gram-model/) | Chris McCormick | 2016-04-19 | Ignored local training input; copyright retained |
+| [BERT Word Embeddings Tutorial · Chris McCormick](https://mccormickml.com/2019/05/14/BERT-word-embeddings-tutorial/) | Chris McCormick | 2019-05-14 | Ignored local training input; copyright retained |
+| [Musings on typicality – Sander Dieleman](https://sander.ai/2020/09/01/typicality.html) | Sander Dieleman | 2020-09-01 | Ignored local training input; copyright retained |
+| [Generating music in the waveform domain – Sander Dieleman](https://sander.ai/2020/03/24/audio-generation.html) | Sander Dieleman | 2020-03-24 | Ignored local training input; copyright retained |
+| [Recurrent Neural Networks Tutorial, Part 1 – Introduction to RNNs · Denny's Blog](https://dennybritz.com/posts/wildml/recurrent-neural-networks-tutorial-part-1/) | Denny Britz | 2015-09-17 | Ignored local training input; copyright retained |
+| [Implementing a Neural Network from Scratch in Python · Denny's Blog](https://dennybritz.com/posts/wildml/implementing-a-neural-network-from-scratch/) | Denny Britz | 2015-09-03 | Ignored local training input; copyright retained |
+
+Technical emails come from the public [SciPy-Dev archive](https://mail.python.org/archives/list/scipy-dev@python.org/) during 2020. Selected messages discuss scientific Python algorithms, numerical software implementation and engineering tradeoffs. Release announcements, administrative announcements, formal proposals and code-heavy messages are excluded. Sender identity, Message-ID selectors, archive checksums and complete collection decisions remain in the ignored local email inventory; no corpus redistribution license is asserted.
+
+## Removed historical PEP attribution
+
+The following sources no longer supply corpus prose or evaluation/reference evidence. Their public attribution and license record remains for provenance; active collection inputs and the corpus manifest contain eligible blog/email sources only. The former source revision was `e449c7e446faec3ecf953e83fbe677b771bf5d7c`. Each source declares public-domain status.
+
+| Document | Credited author | Date | Former excerpt words | License |
+|---|---|---|---:|---|
 | [PEP 103: Collecting information about git](https://peps.python.org/pep-0103/) | Oleg Broytman | 2015-06-01 | 62 | public-domain |
 | [PEP 201: Lockstep Iteration](https://peps.python.org/pep-0201/) | Barry Warsaw | 2000-07-13 | 84 | public-domain |
 | [PEP 203: Augmented Assignments](https://peps.python.org/pep-0203/) | Thomas Wouters | 2000-07-13 | 85 | public-domain |
