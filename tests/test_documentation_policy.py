@@ -7,6 +7,15 @@ def test_given_repository_docs_when_checked_then_inventory_and_links_are_valid()
     assert check_documentation(Path(__file__).resolve().parents[1]) == []
 
 
+def test_given_synthetic_generation_guide_when_maintained_then_it_has_inventory_and_entry_points():
+    from scripts.check_docs import MAINTAINED_DOCS
+    root = Path(__file__).resolve().parents[1]
+    assert 'synthetic-generation.md' in MAINTAINED_DOCS
+    assert (root / 'docs/synthetic-generation.md').is_file()
+    for name in ('README.md', 'negative-corpus.md'):
+        assert '(synthetic-generation.md)' in (root / 'docs' / name).read_text()
+
+
 def scaffold(root):
     from scripts.check_docs import MAINTAINED_DOCS
     (root/'docs').mkdir()
@@ -40,3 +49,13 @@ def test_given_valid_links_and_code_examples_when_checked_then_it_passes(tmp_pat
     scaffold(tmp_path)
     (tmp_path/'docs'/'README.md').write_text('[Heading](specification.md#example)\n[External](https://example.test)\n```md\n[Example](nonexistent.md)\n```\n')
     assert check_documentation(tmp_path)==[]
+
+
+def test_given_synthetic_policy_when_documented_then_old_prohibition_is_superseded():
+    root = Path(__file__).resolve().parents[1]
+    for name in ('specification.md', 'negative-corpus.md', 'corpus.md', 'implementation.md'):
+        text = (root / 'docs' / name).read_text()
+        assert 'ai_synthetic' in text
+        assert 'Only human-authored other-author' not in text
+    policy = (root / 'docs/negative-corpus.md').read_text()
+    assert 'blind' in policy and 'transitive' in policy and 'T30' in policy

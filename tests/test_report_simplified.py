@@ -122,3 +122,11 @@ def test_given_persisted_role_diagnostics_when_rendered_then_source_splits_remai
             ['development_oof', '2', '2', '20.000', '0%'],
             ['historical_holdout', '3', '3', '40.000', '0%'],
         ]
+
+
+def test_given_synthetic_diagnostics_when_reported_then_lineage_counts_are_separate(tmp_path):
+    rows = [dict(source_type='ai_synthetic', split='development_oof', author_id='synthetic-lineage-invented',
+                 root_document_id='synthetic-root', score=70, decision='MATCH')]
+    html = render(tmp_path, rows)
+    assert source_summary(html, 'Synthetic negative lineages') == [['development_oof', '1', '1', '70.000', '100%']]
+    assert '<th>Lineages</th>' in html.split('<h3>Synthetic negative lineages</h3>')[1].split('</table>')[0]

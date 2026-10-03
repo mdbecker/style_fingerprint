@@ -17,3 +17,6 @@ __pycache__/
 
 # Downloaded negative training prose and its local provenance stay untracked.
 /negative_posts/local/
+
+# Synthetic descendants of any private or untracked ancestor.
+/negative_posts/ai/untracked/

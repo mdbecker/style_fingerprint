@@ -7,7 +7,8 @@ import re
 import random
 import yaml
 
-NEGATIVE_CORPUS_POLICY = 'human-email-technical-blog-v1'
+NEGATIVE_CORPUS_POLICY = 'human-email-technical-blog-ai-synthetic-v2'
+NEGATIVE_SOURCE_TYPES = ('email', 'technical_blog', 'ai_synthetic')
 
 WORD_RE = re.compile(r"\b[\w]+(?:['’][\w]+)*\b", re.UNICODE)
 
@@ -140,6 +141,25 @@ def load_corpus(directory):
     return docs
 
 
+def valid_synthetic_metadata(metadata, relative_path=''):
+    """Require the explicit non-human exception and stable lineage grouping."""
+    lineage = str(metadata.get('synthetic_lineage_id', ''))
+    visibility = metadata.get('lineage_visibility')
+    try:
+        attempt = int(metadata.get('generation_attempt', 0))
+    except (ValueError, TypeError):
+        return False
+    parts = Path(relative_path).parts
+    return (str(metadata.get('human_authored', '')).lower() == 'false'
+            and bool(re.fullmatch(r'synthetic-lineage-[a-f0-9]{12,64}', lineage))
+            and metadata.get('author_id') == lineage
+            and bool(str(metadata.get('synthetic_parent_id', '')).strip())
+            and bool(re.fullmatch(r'[a-f0-9]{64}', str(metadata.get('synthetic_parent_sha256', ''))))
+            and visibility in {'tracked', 'untracked'}
+            and not (visibility == 'untracked' and 'tracked' in parts)
+            and bool(str(metadata.get('generator_id', '')).strip()) and attempt > 0)
+
+
 def negative_source_type(metadata, relative_path=''):
     """Validate selected provenance; genre is diagnostic metadata, never a predictor.
 
@@ -148,7 +168,14 @@ def negative_source_type(metadata, relative_path=''):
     an eligible label, so relabelling a PEP cannot admit it.
     """
     kind = str(metadata.get('source_type') or metadata.get('genre') or '').lower()
-    if kind and kind not in {'email', 'technical_blog', 'blog', 'negative_posts'}:
+    parts = Path(relative_path).parts
+    synthetic_storage = any(parts[i] == 'ai' and parts[i + 1] in {'tracked', 'untracked'}
+                            for i in range(len(parts) - 1))
+    if synthetic_storage and kind != 'ai_synthetic':
+        return None
+    if kind == 'ai_synthetic':
+        return kind if valid_synthetic_metadata(metadata, relative_path) else None
+    if kind and kind not in {*NEGATIVE_SOURCE_TYPES, 'blog', 'negative_posts'}:
         return None
     if str(metadata.get('human_authored', True)).lower() in {'false', '0', 'no'}:
         return None

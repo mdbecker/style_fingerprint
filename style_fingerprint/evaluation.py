@@ -2,6 +2,7 @@
 from collections import Counter, defaultdict
 from dataclasses import replace
 import numpy as np
+from .corpus import NEGATIVE_SOURCE_TYPES
 
 
 def root_id(document):
@@ -333,7 +334,7 @@ def mark_hard_negatives(rows, match_threshold, mismatch_threshold=None):
 
 def source_type_diagnostics(rows):
     result = {}
-    for source in ('email','technical_blog'):
+    for source in NEGATIVE_SOURCE_TYPES:
         grouped=[r for r in rows if not r['label'] and r.get('source_type') == source and r.get('split') == 'development_oof']
         result[source]={'documents':len(grouped), 'authors':len({r['author_id'] for r in grouped if r.get('author_id')}),
             'median_compatibility':float(np.median([r['compatibility_score'] for r in grouped])) if grouped else None,

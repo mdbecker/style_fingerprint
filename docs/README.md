@@ -6,6 +6,7 @@
 - [Corpus handling](corpus.md): pooled positive sources, cleaning, provenance, and local privacy.
 - [Evaluation](evaluation.md): grouped root/author validation, frozen thresholds, historical and sealed holdouts, production refitting, and report diagnostics.
 - [Negative collection and licensing](negative-corpus.md): curated sources, extraction, and reuse terms.
+- [Synthetic generation](synthetic-generation.md): repeatable subagent generation, independent review, retries, provenance checks, and retraining handoff.
 - [Negative inventory](negative-inventory.md) and [curated source inputs](negative_sources.json): maintained public attribution and collection provenance.
 - [Development](development.md): concise verification and current limitations.
 - [Historical specifications](historical-specifications.md): consolidated supplied PRD, proposal, and original addendum; superseded requirements are historical.

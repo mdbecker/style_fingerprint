@@ -16,3 +16,11 @@ def test_top_decile_includes_at_least_one_root_without_accepted_negatives():
     rows=[dict(root_document_id=str(i),author_id='a',label=0,compatibility_score=i,split='development_oof',decision='MISMATCH') for i in range(3)]
     ev.mark_hard_negatives(rows,10,None)
     assert [r['root_document_id'] for r in rows if r['hard_negative']] == ['2']
+
+
+def test_given_related_synthetic_roots_when_split_then_lineages_are_disjoint():
+    labels = [1] * 9 + [0] * 12
+    roots = [f'positive-{i}' for i in range(9)] + [f'synthetic-{i}' for i in range(12)]
+    authors = [None] * 9 + [f'synthetic-lineage-{i // 3}' for i in range(12)]
+    for train, test in ev.grouped_splits(labels, roots, authors):
+        assert {authors[i] for i in train if not labels[i]}.isdisjoint({authors[i] for i in test if not labels[i]})

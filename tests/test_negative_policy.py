@@ -92,3 +92,26 @@ def test_given_negative_email_with_code_and_wrapped_quote_markers_when_cleaned_t
     assert clean.count(authored)==2
     for code in ['wrote:','run_model','@jit','def example','array[0]','secret_code']:
         assert code not in clean
+
+
+def test_given_synthetic_with_valid_provenance_when_loaded_then_explicit_exception_applies(tmp_path):
+    metadata = ('source_type: ai_synthetic\nhuman_authored: false\nauthor_id: synthetic-lineage-abcdef123456\n'
+                'synthetic_lineage_id: synthetic-lineage-abcdef123456\nsynthetic_parent_id: public-root\n'
+                'synthetic_parent_sha256: ' + 'a'*64 + '\nlineage_visibility: tracked\ngenerator_id: agent-1\ngeneration_attempt: 1')
+    write(tmp_path, 'ai/tracked/one.md', metadata)
+    docs = corpus.load_negative_corpus(tmp_path)
+    assert len(docs) == 1 and docs[0].source_type == 'ai_synthetic'
+    write(tmp_path, 'ai/tracked/bad.md', 'source_type: ai_synthetic\nhuman_authored: false')
+    assert len(corpus.load_negative_corpus(tmp_path)) == 1
+
+
+def test_given_synthetic_negatives_when_diagnosed_then_they_have_separate_results():
+    from style_fingerprint.evaluation import source_type_diagnostics
+    rows = [{'label': 0, 'source_type': 'ai_synthetic', 'split': 'development_oof',
+             'decision': 'MATCH', 'author_id': 'synthetic-lineage-a', 'compatibility_score': 70}]
+    assert 'ai_synthetic' in source_type_diagnostics(rows)
+
+
+def test_given_unmarked_prose_in_synthetic_storage_when_loaded_then_it_is_excluded(tmp_path):
+    write(tmp_path, 'ai/tracked/unreviewed.md', '', 'An unreviewed model output should not masquerade as a human technical blog.')
+    assert corpus.load_negative_corpus(tmp_path) == []

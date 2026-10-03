@@ -5,7 +5,7 @@ from urllib.parse import unquote,urlsplit
 
 MAINTAINED_DOCS=frozenset({'README.md','specification.md','historical-specifications.md','implementation.md',
                          'development.md','corpus.md','evaluation.md','negative-corpus.md',
-                         'negative-inventory.md','negative_sources.json'})
+                         'negative-inventory.md','negative_sources.json','synthetic-generation.md'})
 
 
 def prose(text):
