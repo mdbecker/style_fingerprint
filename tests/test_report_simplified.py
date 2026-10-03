@@ -58,3 +58,67 @@ def test_given_development_ablations_when_reported_then_selection_is_available_i
     visible, technical = path.read_text().split('<details', 1)
     assert 'without_character' not in visible
     assert 'Development feature ablation' in technical and 'without_character' in technical
+
+
+def source_summary(html, heading):
+    import re
+
+    table = html.split(f'<h3>{heading}</h3>', 1)[1].split('</table>', 1)[0]
+    return [re.findall(r'<td>(.*?)</td>', row) for row in re.findall(r'<tr>(.*?)</tr>', table) if '<td>' in row]
+
+
+def mixed_split_negatives():
+    return [
+        dict(source_type=source, split=split, author_id=f'invented-{source}-{split}-{i}',
+             root_document_id=f'root-{source}-{split}-{i}', score=score, decision=decision)
+        for source in ('email', 'technical_blog')
+        for split, count, score, decision in (
+            ('development_oof', 2, 20, 'MISMATCH'),
+            ('nested_outer', 4, 99, 'MATCH'),
+            ('historical_holdout', 3, 40, 'MISMATCH'))
+        for i in range(count)
+    ]
+
+
+def test_given_all_diagnostic_splits_when_summarized_then_only_explicit_populations_are_counted(tmp_path):
+    html = render(tmp_path, mixed_split_negatives())
+    for heading in ('Negative email authors', 'Negative technical-blog authors'):
+        assert source_summary(html, heading) == [
+            ['development_oof', '2', '2', '20.000', '0%'],
+            ['historical_holdout', '3', '3', '40.000', '0%'],
+        ]
+
+
+def test_given_email_and_blog_holdout_when_rendered_then_source_counts_reconcile(tmp_path):
+    rows = mixed_split_negatives()
+    historical = [row for row in rows if row['split'] == 'historical_holdout']
+    evaluation = {'negative_diagnostics': rows, 'holdout': {'metrics': {'confusion_matrix': {
+        'true_positive': 1, 'false_negative': 0,
+        'true_negative': len(historical), 'false_positive': 0}}}}
+    path = tmp_path / 'reconciled.html'
+    write_html_report(evaluation, {'dataset_counts': {}}, path)
+    html = path.read_text()
+    total = sum(int(row[1]) for heading in ('Negative email authors', 'Negative technical-blog authors')
+                for row in source_summary(html, heading) if row[0] == 'historical_holdout')
+    assert f'{total} / {total} correctly rejected' in html
+    assert total == len(historical)
+
+
+def test_given_nested_outer_rows_when_rendered_then_holdout_author_and_document_counts_are_unchanged(tmp_path):
+    rows = mixed_split_negatives()
+    baseline = render(tmp_path, [row for row in rows if row['split'] != 'nested_outer'])
+    with_nested = render(tmp_path, rows)
+    for heading in ('Negative email authors', 'Negative technical-blog authors'):
+        assert source_summary(with_nested, heading) == source_summary(baseline, heading)
+
+
+def test_given_persisted_role_diagnostics_when_rendered_then_source_splits_remain_explicit(tmp_path):
+    rows = mixed_split_negatives()
+    for row in rows:
+        row['role'] = row.pop('split')
+    html = render(tmp_path, rows)
+    for heading in ('Negative email authors', 'Negative technical-blog authors'):
+        assert source_summary(html, heading) == [
+            ['development_oof', '2', '2', '20.000', '0%'],
+            ['historical_holdout', '3', '3', '40.000', '0%'],
+        ]
