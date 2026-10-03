@@ -4,6 +4,7 @@ from style_fingerprint.report import write_html_report
 def render(tmp_path, negatives=()):
     evaluation = {'supervised': {'selected_model': 'logistic_regression', 'models': {},
         'metrics': {'true_positive_rate': .981, 'false_positive_rate': .05, 'inconclusive_rate': .01, 'auroc': .991},
+        'nested_selection_metrics': {'true_positive_rate': .887, 'false_positive_rate': .057, 'inconclusive_rate': .065, 'auroc': .97},
         'training_performance': {'auroc': 1.}},
         'thresholds': {'match_threshold': 39.123456, 'mismatch_threshold': 38.123456},
         'holdout': {'count': 36, 'metrics': {'auroc': .878, 'confusion_matrix': {'true_positive': 15, 'false_negative': 1, 'true_negative': 11, 'false_positive': 9}}, 'by_source': {}},
@@ -17,8 +18,11 @@ def test_given_operating_metrics_when_reported_then_summary_is_readable_and_deta
     html = render(tmp_path)
     visible = html.split('<details')[0]
     assert '<h2>Summary</h2>' in visible
-    assert 'Recognizes your writing' in visible and '98.1%' in visible
-    assert '5%' in visible and '1%' in visible and '0.99' in visible
+    assert 'Recognizes your writing' in visible and '88.7%' in visible
+    assert '5.7%' in visible and '6.5%' in visible and '0.97' in visible
+    assert '98.1%' not in visible
+    assert 'Estimated using grouped cross-validation of the complete model-selection process.' in visible
+    assert 'Selected configuration OOF performance' in html and '0.981' in html
     assert '15 / 16 recognized' in visible and '11 / 20 correctly rejected' in visible
     assert '<h2>Historical holdout</h2>' in visible and '<h2>Decision boundaries</h2>' in visible
     assert '≥ 39' in visible and '38–39' in visible and '39.123456' not in visible

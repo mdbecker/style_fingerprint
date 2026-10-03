@@ -16,6 +16,7 @@ def write_html_report(evaluation, manifest, path):
         return table(['Metric','Value'], [(name,number(metrics.get(key))) for key,name in keys])
     supervised=evaluation.get('supervised') or {}
     metrics=supervised.get('metrics') or {}
+    summary_metrics=supervised.get('nested_selection_metrics') or {}
     holdout=evaluation.get('holdout') or {}
     thresholds=evaluation.get('thresholds') or supervised.get('thresholds') or {}
     match=thresholds.get('match_threshold'); mismatch=thresholds.get('mismatch_threshold')
@@ -38,9 +39,9 @@ def write_html_report(evaluation, manifest, path):
     author_rows.sort(key=lambda r: (-r[5],-r[3],str(r[0])))
     sections='<header><h1>Writing Style Fingerprint</h1><p>Style compatibility compares supplied writing; it is not proof of authorship.</p></header>'
     sections+='<section><h2>Summary</h2><div class="cards">'
-    for name,value in [('Recognizes your writing',percent(metrics.get('true_positive_rate'))),('False accepts',percent(metrics.get('false_positive_rate'))),('Inconclusive',percent(metrics.get('inconclusive_rate'))),('AUROC','Unavailable' if metrics.get('auroc') is None else f'{metrics["auroc"]:.2f}')]:
+    for name,value in [('Recognizes your writing',percent(summary_metrics.get('true_positive_rate'))),('False accepts',percent(summary_metrics.get('false_positive_rate'))),('Inconclusive',percent(summary_metrics.get('inconclusive_rate'))),('AUROC','Unavailable' if summary_metrics.get('auroc') is None else f'{summary_metrics["auroc"]:.2f}')]:
         sections+='<article><strong>'+value+'</strong><span>'+name+'</span></article>'
-    sections+='</div><p>Grouped development out-of-fold results.</p></section>'
+    sections+='</div><p>Estimated using grouped cross-validation of the complete model-selection process.</p></section>'
     sections+='<section><h2>Historical holdout</h2>'
     cm=holdout.get('metrics',{}).get('confusion_matrix')
     if cm and all(cm.get(k) is not None for k in ('true_positive','false_negative','true_negative','false_positive')):
@@ -78,7 +79,7 @@ def write_html_report(evaluation, manifest, path):
             sections+='<h3>Most difficult other writers</h3>'+table(['Author','False acceptance'],[(r[0],percent(r[5])) for r in difficult])
         sections+='</section>'
     sections+='<details><summary>Technical details</summary>'
-    sections+='<h3>Selected model development operating point</h3>'+metrics_table(metrics)
+    sections+='<h3>Selected configuration OOF performance</h3>'+metrics_table(metrics)
     sections+='<h3>Training fit</h3><p>Optimistic fitting diagnostic, not unseen performance.</p>'+metrics_table(supervised.get('training_performance') or {})
     sections+='<h3>Development cross-validation</h3>'+metrics_table(supervised.get('nested_selection_metrics') or {})
     if supervised.get('ablations'):

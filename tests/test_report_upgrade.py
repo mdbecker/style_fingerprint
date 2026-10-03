@@ -37,6 +37,6 @@ def test_selected_model_operating_point_and_inconclusive_rate_are_visible(tmp_pa
     path=tmp_path/'report.html'
     write_html_report(evaluation,manifest,path)
     html=path.read_text()
-    assert 'Selected model development operating point' in html
+    assert 'Selected configuration OOF performance' in html
     assert 'Inconclusive rate' in html
     assert '0.250' in html

@@ -292,6 +292,7 @@ class StyleFingerprint:
         thresholds = self.evaluation.get('thresholds', {})
         frozen = {'negative_corpus_hashes': self.manifest['negative_corpus_hashes'], 'negative_corpus_policy': NEGATIVE_CORPUS_POLICY, 'selected_model': self.verifier['kind'] if self.verifier else 'reference_similarity',
                   'feature_schema_version': FEATURE_SCHEMA_VERSION,
+                  'character_features_enabled': bool(self.verifier and 'char_ngram' in self.verifier['feature_names']),
                   'selected_feature_schema': self.verifier['feature_names'] if self.verifier else [],
                   'view_generation_version': self.manifest['view_generation_version'],
                   'segmentation': self.manifest['view_size_configuration'],
@@ -332,6 +333,8 @@ class StyleFingerprint:
         positive_ids = set(self.manifest['historical_document_ids'])
         x, all_names = self._comparison_rows(views, sorted(positive_ids))
         names = frozen['selected_feature_schema']
+        if frozen.get('character_features_enabled', 'char_ngram' in names) != ('char_ngram' in names):
+            raise ValueError('Frozen character decision differs from frozen feature schema')
         if not set(names) <= set(all_names):
             raise ValueError('Frozen feature schema differs from production features')
         x = x[:, [all_names.index(name) for name in names]]

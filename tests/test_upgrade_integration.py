@@ -220,3 +220,23 @@ def test_given_compatible_embeddings_and_changed_verifier_schema_when_rebuilt_th
     rebuilt=StyleFingerprint.build(corpus, bank, holdout_fraction=0)
     assert not encoder
     assert rebuilt.manifest['embedding_cache']['computed'] == 0
+
+
+def test_given_frozen_character_free_schema_when_building_then_production_excludes_characters(corpus, encoder, tmp_path):
+    from test_supervised import negatives
+    from style_fingerprint import StyleFingerprint
+    negatives(tmp_path/'negative_posts', 12)
+    bank = tmp_path/'bank'
+    StyleFingerprint.build(corpus, bank, holdout_fraction=0, build_mode='evaluation')
+    path = bank/'evaluation_config.json'
+    frozen = json.loads(path.read_text())
+    frozen['selected_feature_schema'].remove('char_ngram')
+    frozen['character_features_enabled'] = False
+    frozen['selected_configuration'] = 'hard_negative_weighting_without_character'
+    path.write_text(json.dumps(frozen))
+    evaluation_bytes = (bank/'evaluation.json').read_bytes()
+    production = StyleFingerprint.build(corpus, bank, holdout_fraction=0, build_mode='production')
+    assert 'char_ngram' not in production.verifier['feature_names']
+    assert production.verifier['estimator'].n_features_in_ == len(frozen['selected_feature_schema'])
+    assert production.manifest['evaluation_configuration'] == frozen
+    assert (bank/'evaluation.json').read_bytes() == evaluation_bytes

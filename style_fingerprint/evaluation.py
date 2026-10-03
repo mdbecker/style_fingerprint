@@ -256,6 +256,7 @@ CONFIGURATIONS = {
     'contrast': {'include_contrast': True, 'include_character': True},
     'hard_negative_weighting': {'include_contrast': True, 'include_character': True},
     'without_character': {'include_contrast': True, 'include_character': False},
+    'hard_negative_weighting_without_character': {'include_contrast': True, 'include_character': False},
 }
 
 
@@ -263,7 +264,7 @@ def choose_configuration(metrics):
     """Adopt only an operational improvement within explicit degradation guards."""
     selected = 'baseline'
     for name in CONFIGURATIONS:
-        if name not in metrics or name == 'baseline':
+        if name not in metrics or name in {'baseline', 'hard_negative_weighting_without_character'}:
             continue
         candidate, incumbent = metrics[name], metrics[selected]
         comparisons = [incumbent]
@@ -275,6 +276,14 @@ def choose_configuration(metrics):
                and candidate['brier'] <= reference['brier'] + 1e-12
                for reference in comparisons):
             selected = name
+    if selected == 'hard_negative_weighting' and 'hard_negative_weighting_without_character' in metrics:
+        with_character = metrics['hard_negative_weighting']
+        without = metrics['hard_negative_weighting_without_character']
+        material = (with_character['tpr_at_5pct_fpr'] - without['tpr_at_5pct_fpr'] >= .02 - 1e-12
+                    or with_character['auroc'] - without['auroc'] > .01 + 1e-12
+                    or with_character['true_positive_rate'] - without['true_positive_rate'] > .03 + 1e-12)
+        if not material:
+            selected = 'hard_negative_weighting_without_character'
     return selected
 
 
@@ -397,7 +406,7 @@ def run_supervised(fp,negatives):
                 xt,_=_configuration_rows(fp,inner_test_views,inner_docs,positive_ids,configuration)
                 for kind in kinds:
                     key=(configuration,kind)
-                    estimator=_fit_comparison_estimator(kind,seed,xi,inner_views,positive_ids,inner_hard if configuration=='hard_negative_weighting' else None)
+                    estimator=_fit_comparison_estimator(kind,seed,xi,inner_views,positive_ids,inner_hard if configuration in {'hard_negative_weighting', 'hard_negative_weighting_without_character'} else None)
                     inner_margins[key][inner_test]=_root_margins(inner_test_docs,inner_test_views,_margin(estimator,kind,xt))
         inner_metrics={}
         for configuration in CONFIGURATIONS:
@@ -415,7 +424,7 @@ def run_supervised(fp,negatives):
                 calibrator=fit_calibrator(inner_margins[key],labels[train],seed)
                 inner_scores=calibrator.predict_proba(inner_margins[key].reshape(-1,1))[:,1]
                 inner_metrics[key]=performance_report(labels[train],inner_scores)
-                estimator=_fit_comparison_estimator(kind,seed,x_train,train_views,positive_ids,outer_hard if configuration=='hard_negative_weighting' else None)
+                estimator=_fit_comparison_estimator(kind,seed,x_train,train_views,positive_ids,outer_hard if configuration in {'hard_negative_weighting', 'hard_negative_weighting_without_character'} else None)
                 margins[key][test]=_root_margins(test_docs,test_views,_margin(estimator,kind,x_test))
                 predictions[key][test]=calibrator.predict_proba(margins[key][test].reshape(-1,1))[:,1]
         inner_models={}
@@ -450,7 +459,7 @@ def run_supervised(fp,negatives):
     views=_views(docs,seed)
     fp.manifest['dataset_counts']['training_views']=len(views)
     x,names=_configuration_rows(fp,views,docs,positive_ids,selected_configuration)
-    hard_authors=_training_hard_authors(fp,docs,positive_ids) if selected_configuration=='hard_negative_weighting' else set()
+    hard_authors=_training_hard_authors(fp,docs,positive_ids) if selected_configuration in {'hard_negative_weighting', 'hard_negative_weighting_without_character'} else set()
     estimator=_fit_comparison_estimator(selected,seed,x,views,positive_ids,hard_authors)
     calibrator=fit_calibrator(margins[selected_key],labels,seed)
     fp.verifier={'kind':selected,'estimator':estimator,'calibrator':calibrator,'feature_names':names,
