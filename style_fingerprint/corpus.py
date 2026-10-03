@@ -308,7 +308,7 @@ def chunk_text(text, document_id, target=300, minimum=100, maximum=700,
     if not word_count(text):
         return []
     units = []
-    for paragraph in re.finditer(r'\S(?:.*?\S)?(?=\n\s*\n|$)', text, re.S):
+    for paragraph in re.finditer(r'\S(?:.*?\S)?(?=\s*(?:\r?\n\s*\r?\n|$))', text, re.S):
         start, end = paragraph.span()
         if word_count(paragraph[0]) <= maximum:
             units.append((start, end))
@@ -357,7 +357,7 @@ def generate_training_views(document, *, seed=42):
     text = document.clean_text
     size = word_count(text)
     units = []
-    for paragraph in re.finditer(r'\S(?:.*?\S)?(?=\n\s*\n|$)', text, re.S):
+    for paragraph in re.finditer(r'\S(?:.*?\S)?(?=\s*(?:\r?\n\s*\r?\n|$))', text, re.S):
         start, end = paragraph.span()
         if word_count(paragraph[0]) <= 700:
             units.append((start, end))

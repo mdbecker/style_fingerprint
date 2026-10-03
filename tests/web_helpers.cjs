@@ -1,0 +1,28 @@
+// Run with a standard JavaScript runtime; no packages or frontend build required.
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const html = fs.readFileSync('style_fingerprint/web/index.html', 'utf8');
+const source = html.match(/<script id="analysis-helpers">([\s\S]*?)<\/script>/);
+assert.ok(source, 'The page provides small testable rendering helpers');
+const context = vm.createContext({});
+vm.runInContext(source[1], context);
+const helpers = context.StyleView;
+assert.equal(helpers.escapeHTML('<script>"&\''), '&lt;script&gt;&quot;&amp;&#39;');
+const text = '📝 First. Second. <script>alert(1)</script>';
+const ranges = [{start:10,end:17,severity:'high',reasons:['why']}, {start:2,end:8,severity:'low',reasons:['why']}, {start:4,end:9,severity:'medium'}, {start:-1,end:3}, {start:0,end:999}];
+const ordered = helpers.orderRanges(text,ranges);
+assert.equal(ordered.length, 2);
+assert.equal(ordered[0].start, 2);
+assert.equal(ordered[1].start, 10);
+const markup = helpers.highlightHTML(text,ranges);
+assert.ok(markup.includes('&lt;script&gt;'));
+assert.ok(!markup.includes('<script>'));
+assert.ok(markup.includes('data-segment="0"'));
+assert.equal(markup.replace(/<[^>]*>/g,'').replace(/&lt;/g,'<').replace(/&gt;/g,'>'), text);
+assert.equal(helpers.scoreChange(78,84), '78.0 → 84.0 · +6.0 points');
+assert.equal(helpers.scoreChange(84,78), '84.0 → 78.0 · −6.0 points');
+assert.equal(helpers.scoreChange(null,84), 'First analysis');
+assert.deepEqual(JSON.parse(JSON.stringify(helpers.selectionOffsets('📝 First sentence.', {start:2,end:8}))), {start:3,end:9});
+assert.equal(helpers.wordCount('Café naïve résumé. It’s useful.'),5);
+console.log('Rendering, Unicode offsets, overlap safety, escaping and comparison pass.');

@@ -1,4 +1,4 @@
-"""Four local commands: build, score, explain, and evaluate."""
+"""Local fingerprint commands and the writing self-editor."""
 import argparse
 from dataclasses import replace
 import json
@@ -35,6 +35,9 @@ def _parser():
         sub.add_argument('file', nargs='?')
         sub.add_argument('--text', help='Score raw text instead of a file')
         sub.add_argument('--input-format', choices=['markdown', 'email'], default='markdown', help='Use the same email cleaning as the positive work corpus')
+    serve = commands.add_parser('serve', help='Start the local writing self-editor')
+    serve.add_argument('--host', default='127.0.0.1')
+    serve.add_argument('--port', type=int, default=8000)
     for sub in commands.choices.values():
         sub.add_argument('--artifacts', default='artifacts')
         sub.add_argument('--json', action='store_true', help='Print machine-readable JSON')
@@ -79,7 +82,11 @@ def main(argv=None):
     parser = _parser()
     args = parser.parse_args(argv)
     try:
-        if args.command in {'build', 'evaluate'}:
+        if args.command == 'serve':
+            import uvicorn
+            from .web import create_app
+            uvicorn.run(create_app(args.artifacts), host=args.host, port=args.port, access_log=False)
+        elif args.command in {'build', 'evaluate'}:
             bank = Path(args.artifacts)
             if args.command == 'build' and not (bank / 'evaluation_config.json').exists():
                 print('No frozen evaluation configuration: running evaluation once before production refit.', file=sys.stderr if args.json else sys.stdout)

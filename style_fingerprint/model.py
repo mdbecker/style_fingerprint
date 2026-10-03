@@ -772,9 +772,9 @@ class StyleFingerprint:
                                 'Do not use these test results for model selection, calibration, thresholds, or parameter tuning.']}
 
     def score(self, text, *, explain=True, input_format='markdown', _raw_structure=None):
-        if input_format not in {'markdown', 'email'}:
-            raise ValueError('Input format must be markdown or email.')
-        clean = clean_email(text) if input_format == 'email' else clean_markdown(text)
+        if input_format not in {'markdown', 'email', 'plain'}:
+            raise ValueError('Input format must be markdown, email, or plain.')
+        clean = text if input_format == 'plain' else clean_email(text) if input_format == 'email' else clean_markdown(text)
         structure = _raw_structure if _raw_structure is not None else (clean if input_format == 'email' else text)
         if word_count(clean) < 3:
             raise ValueError('Scoring input has insufficient usable prose (at least three words required).')

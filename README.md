@@ -48,6 +48,22 @@ python -m style_fingerprint evaluate --json
 
 `--offline` requires an already downloaded checkpoint. CPU works; automatic device selection prefers CUDA, then MPS, then CPU. On macOS, CPU inference uses one worker thread to avoid native OpenMP crashes when the encoder and optional challenger share a process. `score` prints a compact result; `explain` includes full diagnostics. JSON scoring includes explanations. Errors are actionable and return a nonzero exit status.
 
+## Local writing self-editor
+
+With an existing production fingerprint and the pinned encoder already cached, run:
+
+```sh
+python -m style_fingerprint serve
+```
+
+Open `http://127.0.0.1:8000`. Paste plain prose, choose **Analyze style**, select an underlined sentence to see measured differences, and edit in the draft box. Choose **Analyze again** (or Ctrl/Cmd + Enter) to compare the new score with the previous result. Highlights show at most ten relative anomalies; the sidebar shows up to three differences and three familiar style patterns. Low/medium/high highlights use both color and underline styles. No text is rewritten for you.
+
+Compatibility is similarity to your historical fingerprint, not authorship probability. Decisions use existing calibrated thresholds, not an arbitrary midpoint. Passage compatibility supplies context for highlighted sentences; deletion deltas measure sensitivity, not causation. Short drafts may have no sentence-deletion evidence, and no highlight does not establish a perfect match. Fewer than three words fails clearly; evidence is LOW below 150 words, MEDIUM from 150–499, and HIGH from 500, with component disagreement able to downgrade it. Topic, genre and segmentation can affect results.
+
+The server binds to `127.0.0.1` by default and serves the self-contained page and API together. It loads the fingerprint and cached encoder once, serializes inference, and never retrains. Submitted prose is not logged, saved, sent externally, or included in artifacts; derived candidate cache entries are released after each request. Browser results and previous scores stay in page memory only; refreshing clears them. There are no external page assets or frontend build dependencies. The limit is 50,000 Unicode characters. Loading failures, invalid prose and request failures are shown without Python tracebacks. `GET /api/health` reports readiness.
+
+Use `--port 8080` to change the port, or `--artifacts PATH` to use another existing fingerprint. The HTML source is [the packaged single page](style_fingerprint/web/index.html). This personal tool has no authentication; keep its binding local. A first encoder download must happen through the existing build workflow, before starting the self-editor.
+
 ## Python API
 
 ```python

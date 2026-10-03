@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voice — Writing self-editor</title>
+<style>
+:root{--paper:#f6f5f0;--white:#fffefb;--ink:#24332f;--muted:#66736b;--line:#dedfd6;--green:#254f43;--soft:#edf1e9;--gold:#be8a36;--low:#fff4d9;--medium:#ffe4b4;--high:#f7ccbb}
+*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}button,textarea{font:inherit}button{cursor:pointer}button:disabled{cursor:wait;opacity:.58}button:focus-visible,a:focus-visible,[tabindex]:focus-visible{outline:3px solid #608c7d;outline-offset:4px}[hidden]{display:none!important}
+.shell{max-width:1280px;margin:auto;padding:0 48px}.topbar{height:88px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line)}.brand{display:flex;align-items:center;gap:12px;font-family:Georgia,serif;font-size:27px;letter-spacing:-1px}.brand-icon{height:32px;width:32px;display:grid;place-items:center;background:var(--green);color:white;border-radius:50%;font-size:22px;font-style:italic}.top-meta{display:flex;gap:24px;align-items:center;font-size:12px;color:var(--muted)}.status{display:flex;align-items:center;gap:7px}.dot{width:7px;height:7px;border-radius:50%;background:#a29b83}.status.ready .dot{background:#447c60}.status.unavailable .dot{background:#a54e36}
+.hero{padding:32px 0 24px;display:flex;justify-content:space-between;align-items:flex-end;gap:25px}.eyebrow{text-transform:uppercase;letter-spacing:1.8px;font-size:10px;font-weight:700;color:var(--green);margin-bottom:10px}h1{font:normal 43px/1.15 Georgia,serif;letter-spacing:-1.5px;margin:0 0 10px}.hero p{margin:0;color:var(--muted);font-size:15px}.local-note{font-size:12px;color:var(--muted);white-space:nowrap;padding-bottom:4px}.workspace{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:24px;align-items:start;padding-bottom:32px}.card{background:var(--white);border:1px solid var(--line);border-radius:12px;overflow:hidden}.card-head{padding:19px 24px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--line)}h2{font-size:15px;line-height:1.4;margin:0;font-weight:650}.quiet{font-size:12px;color:var(--muted)}.editor-body{padding:24px}label{display:block}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}textarea{display:block;border:0;outline:none;resize:vertical;width:100%;min-height:245px;background:transparent;color:var(--ink);font:18px/1.85 Georgia,serif;padding:0}textarea::placeholder{color:#91978c}textarea:focus-visible{outline:2px solid #608c7d;outline-offset:10px;border-radius:2px}.editor-foot{padding:17px 24px;background:#f9f9f5;border-top:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:16px}.primary{border:1px solid var(--green);background:var(--green);color:white;padding:11px 18px;border-radius:6px;font-size:13px;font-weight:600;display:inline-flex;align-items:center;gap:14px}.primary:hover:not(:disabled){background:#193b31}.shortcut{font-size:11px;color:var(--muted)}kbd{font:inherit;border:1px solid var(--line);padding:2px 5px;border-radius:3px}.secondary{border:0;background:none;color:var(--green);font-size:12px;text-decoration:underline;padding:0}.error{margin:18px 0 0;padding:13px 16px;border:1px solid #dbaa96;background:#fff1e9;border-radius:6px;color:#843f2c;font-size:13px}.analysis-card{margin-top:22px}.legend{display:flex;gap:13px;flex-wrap:wrap;font-size:11px;color:var(--muted)}.swatch{padding:1px 5px;border-bottom:2px solid #d4b779;background:var(--low);border-radius:2px}.swatch.medium{background:var(--medium);border-color:#b4812e}.swatch.high{background:var(--high);border-color:#a85034}.analysis-text{padding:26px 24px;white-space:pre-wrap;overflow-wrap:anywhere;font:17px/1.9 Georgia,serif;max-height:520px;overflow:auto}.highlight{padding:2px 0;border-bottom:1px solid #c7a458;background:var(--low);border-radius:2px;cursor:pointer}.highlight.medium{background:var(--medium);border-bottom:2px solid #b4812e}.highlight.high{background:var(--high);border-bottom:3px double #a85034}.highlight.active{outline:2px solid var(--green);outline-offset:2px}.analysis-note{padding:12px 24px;border-top:1px solid var(--line);font-size:11px;color:var(--muted)}.stale{padding:10px 24px;background:#fff4d9;font-size:12px;color:#765523}.sidebar{position:sticky;top:20px}.aside-body{padding:24px}.empty-symbol{width:48px;height:48px;background:var(--soft);border-radius:50%;display:grid;place-items:center;color:var(--green);font:24px Georgia,serif;margin:4px 0 18px}.empty-title{font:23px/1.3 Georgia,serif;margin:0 0 12px}.empty p{font-size:13px;color:var(--muted);margin:0 0 25px}.steps{display:grid;gap:16px}.step{display:flex;gap:13px;align-items:start;font-size:12px;color:var(--muted)}.step-number{height:22px;width:22px;border:1px solid var(--line);border-radius:50%;display:grid;place-items:center;flex:none;font-size:10px;color:var(--green)}.step strong{display:block;color:var(--ink);font-size:12px;margin-bottom:2px}.aside-note{padding:17px 24px;border-top:1px solid var(--line);font-size:11px;color:var(--muted)}.score-label{font-size:12px;color:var(--muted)}.score-line{display:flex;gap:9px;align-items:baseline;margin:5px 0 12px}.score{font:54px/1 Georgia,serif;letter-spacing:-2px}.out-of{font-size:13px;color:var(--muted)}.meter{height:5px;border-radius:5px;background:var(--soft);overflow:hidden;margin:0 0 13px}.meter-fill{height:100%;background:var(--green);width:0;transition:width .3s}.comparison{font-size:11px;color:var(--green);margin-bottom:22px;min-height:17px}.result-meta{display:grid;gap:10px;font-size:12px}.meta-row{display:flex;justify-content:space-between;gap:15px}.meta-row span:first-child{color:var(--muted)}.badge{font-size:10px;font-weight:700;letter-spacing:.5px;border:1px solid #d6dbc9;background:var(--soft);border-radius:4px;padding:3px 7px;max-width:190px;text-align:right}.badge.mismatch{background:#fae3d7;border-color:#e7bfaa;color:#843f2c}.notice{font-size:12px;line-height:1.5;background:#fff4d9;padding:11px 13px;border-radius:5px;margin:17px 0 0;color:#765523}.section{border-top:1px solid var(--line);padding:21px 24px}.section h3{font-size:12px;margin:0 0 13px;font-weight:650}.finding{display:block;width:100%;text-align:left;border:1px solid var(--line);background:transparent;border-radius:6px;padding:12px;margin:0 0 9px;color:var(--ink)}.finding:hover{border-color:#8ba294;background:var(--soft)}.finding-top{display:flex;justify-content:space-between;gap:10px;font-size:10px;color:var(--muted);margin-bottom:6px}.finding-quote{font:14px/1.5 Georgia,serif;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;margin:0 0 6px}.finding-reason{font-size:11px;color:var(--muted);display:block}.strengths{list-style:none;margin:0;padding:0;display:grid;gap:12px}.strengths li{font-size:12px;color:var(--muted);display:flex;gap:9px}.check{color:var(--green);font-weight:600}.detail{border:1px solid #b8c9be;background:var(--soft);border-radius:7px;padding:15px;margin-top:18px}.detail h4{font-size:11px;margin:14px 0 5px;color:var(--muted)}.analysis-card>.detail{margin:0 24px 22px}.detail h3{font-size:12px;margin:0 0 8px}.detail p{font-size:12px;margin:8px 0;color:#465b50}.detail .secondary{margin-top:6px}details{font-size:11px;color:var(--muted);margin-top:15px}summary{cursor:pointer}footer{display:flex;justify-content:space-between;gap:15px;border-top:1px solid var(--line);padding:20px 0 28px;color:var(--muted);font-size:11px}.footer-mark{font-family:Georgia,serif;font-style:italic;font-size:13px;color:var(--green)}.busy{animation:pulse 1.4s ease-in-out infinite}@keyframes pulse{50%{opacity:.5}}@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}}@media(max-width:960px){.shell{padding:0 28px}.workspace{grid-template-columns:minmax(0,1fr) 300px;gap:18px}.local-note{display:none}.card-head,.aside-body,.section{padding-left:20px;padding-right:20px}}@media(max-width:760px){.shell{padding:0 20px}.topbar{height:72px}.top-meta{gap:10px}.top-meta>.quiet{display:none}.hero{padding:28px 0 24px}h1{font-size:35px}.hero p{font-size:13px}.workspace{grid-template-columns:1fr}.sidebar{position:static}.editor-body{padding:22px}textarea{min-height:260px;font-size:17px}.editor-foot{padding:16px 20px}.shortcut{display:none}.card-head{gap:12px}.legend{gap:8px}.score{font-size:48px}footer{flex-direction:column;gap:7px}.analysis-text{max-height:380px}}
+</style>
+</head>
+<body>
+<div class="shell">
+<header class="topbar"><div class="brand"><span class="brand-icon" aria-hidden="true">v</span>voice<span class="sr-only">Writing self-editor</span></div><div class="top-meta"><span class="quiet">Your personal writing fingerprint</span><span class="status" id="model-status" role="status"><span class="dot" aria-hidden="true"></span><span id="model-label">Connecting to model…</span></span></div></header>
+<main>
+<div class="hero"><div><div class="eyebrow">The writing self-editor</div><h1>Make it sound like you.</h1><p>Find where your draft drifts from your voice. Make the edits yourself.</p></div><div class="local-note">◎ &nbsp;Local analysis. Your words stay here.</div></div>
+<div class="workspace">
+<div>
+<section class="card" aria-labelledby="draft-heading"><div class="card-head"><h2 id="draft-heading">Your draft</h2><span class="quiet" id="draft-count">0 words</span></div><div class="editor-body"><label for="draft" class="sr-only">Paste or write your draft</label><textarea id="draft" placeholder="Paste a draft here. A note, an essay, that email you’ve been thinking about.\n\nStart with your words. We’ll help you see where your voice comes through—and where it doesn’t." spellcheck="true" aria-describedby="draft-hint"></textarea></div><div class="editor-foot"><span id="draft-hint" class="shortcut">Analyze when you’re ready &nbsp; <kbd id="shortcut-key">Ctrl ↵</kbd></span><button class="primary" id="analyze" disabled><span id="button-label">Analyze style</span><span aria-hidden="true">↗</span></button></div></section>
+<div class="error" id="error" role="alert" hidden></div>
+<section class="card analysis-card" id="analysis-card" aria-labelledby="analysis-heading" hidden><div class="card-head"><h2 id="analysis-heading">Your draft, under the lens</h2><div class="legend" aria-label="Highlight severity"><span class="swatch">Low</span><span class="swatch medium">Medium</span><span class="swatch high">High</span></div></div><div class="stale" id="stale" role="status" hidden>Draft changed. Analyze again to update these highlights.</div><div id="analysis-text" class="analysis-text"></div><div id="detail" class="detail" hidden tabindex="-1"></div><div class="analysis-note">Select an underlined sentence to explore its differences. Highlights are relative, not a verdict.</div></section>
+</div>
+<aside class="sidebar card" aria-labelledby="results-heading"><div class="card-head"><h2 id="results-heading">Style analysis</h2><span class="quiet" id="result-label" role="status" aria-live="polite">Ready when you are</span></div>
+<div id="empty" class="aside-body empty"><div class="empty-symbol" aria-hidden="true">≋</div><h3 class="empty-title">A little perspective<br>on your own voice.</h3><p>Compare your draft with your historical writing. See what feels familiar, and what might deserve a second look.</p><div class="steps"><div class="step"><span class="step-number">1</span><div><strong>Bring your writing</strong>Paste plain text into the editor.</div></div><div class="step"><span class="step-number">2</span><div><strong>Look for the differences</strong>Explore highlighted sentences and measured style patterns.</div></div><div class="step"><span class="step-number">3</span><div><strong>Edit, then compare</strong>Analyze again to see how the score changes.</div></div></div></div>
+<div id="results" hidden><div class="aside-body"><div class="score-label">Style compatibility</div><div class="score-line"><span class="score" id="score">—</span><span class="out-of">/ 100</span></div><div class="meter" aria-hidden="true"><div class="meter-fill" id="meter"></div></div><div class="comparison" id="comparison"></div><div class="result-meta"><div class="meta-row"><span>Decision</span><span class="badge" id="decision"></span></div><div class="meta-row"><span>Evidence strength</span><strong id="evidence"></strong></div><div class="meta-row"><span>Words analyzed</span><strong id="analyzed-count"></strong></div></div><div class="notice" id="notice" hidden></div><details><summary>How to read this result</summary><p>Compatibility measures similarity to your historical fingerprint. It is not the probability you wrote this, or an AI detector. Subject matter and genre can affect results.</p><p id="thresholds"></p><p>Highlight strength uses existing deletion sensitivity or passage-score differences. A passage score is context for its sentences, not an individual sentence score. No highlight does not prove a perfect match.</p></details></div><section class="section"><h3>Most unlike your writing</h3><div id="mismatches"></div></section><section class="section"><h3>Most like your writing</h3><ul class="strengths" id="strengths"></ul></section></div>
+<div class="aside-note">A second pair of eyes, not a replacement for your judgment. Your voice is yours to keep.</div></aside>
+</div>
+</main>
+<footer><span class="footer-mark">Your words. Your voice.</span><span>Processed on this computer · Nothing saved · No automatic rewrites</span></footer>
+</div>
+<script id="analysis-helpers">
+var StyleView = (() => {
+  function escapeHTML(value) { return String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+  function orderRanges(text, ranges) {
+    const length = Array.from(text).length;
+    const sorted = ranges.filter(r => Number.isInteger(r.start) && Number.isInteger(r.end) && r.start >= 0 && r.end <= length && r.end > r.start)
+      .sort((a,b) => (a.type === 'passage') - (b.type === 'passage') || a.start-b.start || a.end-b.end);
+    const picked = [];
+    for (const r of sorted) if (!picked.some(p => r.start < p.end && p.start < r.end)) picked.push(r);
+    return picked.sort((a,b) => a.start-b.start);
+  }
+  function highlightHTML(text, ranges) {
+    const chars = Array.from(text); let end = 0; let html = '';
+    orderRanges(text, ranges).forEach((r,i) => {
+      const severity = ['low','medium','high'].includes(r.severity) ? r.severity : 'low';
+      html += escapeHTML(chars.slice(end,r.start).join(''));
+      html += `<span class="highlight ${severity}" tabindex="0" role="button" data-segment="${i}" aria-label="${severity} style difference. Select for explanation.">${escapeHTML(chars.slice(r.start,r.end).join(''))}</span>`;
+      end = r.end;
+    });
+    return html + escapeHTML(chars.slice(end).join(''));
+  }
+  function scoreChange(previous, score) {
+    if (previous === null) return 'First analysis';
+    const delta = score-previous;
+    return `${previous.toFixed(1)} → ${score.toFixed(1)} · ${delta < 0 ? '−' : '+'}${Math.abs(delta).toFixed(1)} points`;
+  }
+  function selectionOffsets(text, range) {
+    const chars = Array.from(text);
+    return {start:chars.slice(0,range.start).join('').length,end:chars.slice(0,range.end).join('').length};
+  }
+  function wordCount(text) { return (text.match(/[\p{L}\p{N}_]+(?:['’][\p{L}\p{N}_]+)*/gu) || []).length; }
+  return {escapeHTML,orderRanges,highlightHTML,scoreChange,selectionOffsets,wordCount};
+})();
+</script>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const draft = $('draft'), button = $('analyze');
+  let busy = false, ready = false, last = null, submitted = '', segments = [];
+  const setText = (id,value) => { $(id).textContent = value; };
+  const esc = StyleView.escapeHTML;
+  draft.placeholder = draft.placeholder.replace(/\\n/g,'\n');
+  setText('shortcut-key', /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘ ↵' : 'Ctrl ↵');
+  function updateDraft() {
+    const words = StyleView.wordCount(draft.value);
+    const length = Array.from(draft.value).length;
+    setText('draft-count', `${words.toLocaleString()} words${length > 45000 ? ` · ${length.toLocaleString()} / 50,000 characters` : ''}`);
+    button.disabled = busy || !ready || !draft.value.trim();
+    $('stale').hidden = !last || draft.value === submitted;
+    if (!busy) setText('button-label', last ? 'Analyze again' : 'Analyze style');
+  }
+  function showError(message) { $('error').textContent = message; $('error').hidden = false; }
+  async function health() {
+    try {
+      const response = await fetch('/api/health', {cache:'no-store'});
+      if (!response.ok) throw new Error();
+      const data = await response.json(); ready = data.model_loaded === true;
+    } catch (_) { ready = false; }
+    $('model-status').className = `status ${ready ? 'ready' : 'unavailable'}`;
+    setText('model-label', ready ? 'Model ready' : 'Model unavailable');
+    if (!ready) showError('Your saved writing fingerprint could not be loaded. Restart the local server and refresh this page. If this is your first use, follow the setup steps in the README.');
+    updateDraft();
+  }
+  function revealSelection(start) {
+    // Mirror the textarea's wrapping to locate the selected line accurately.
+    const style = getComputedStyle(draft), mirror = document.createElement('div');
+    mirror.style.cssText = 'position:absolute;top:-100000px;left:0;visibility:hidden;white-space:pre-wrap;overflow-wrap:break-word;box-sizing:border-box;';
+    for (const property of ['font','lineHeight','letterSpacing','padding','tabSize']) mirror.style[property] = style[property];
+    mirror.style.width = `${draft.clientWidth}px`;
+    mirror.textContent = draft.value.slice(0,start);
+    const marker = document.createElement('span'); marker.textContent = '\u200b'; mirror.append(marker); document.body.append(mirror);
+    draft.scrollTop = Math.max(0,marker.offsetTop-draft.clientHeight/3);
+    mirror.remove();
+  }
+  function selectSegment(index, scroll=false, focus=false) {
+    const row = segments[index]; if (!row) return;
+    document.querySelectorAll('.highlight').forEach(el => el.classList.toggle('active', Number(el.dataset.segment) === index));
+    $('detail').hidden = false;
+    const compatibility = Number.isFinite(row.compatibility) ? `<p>Passage compatibility: <strong>${row.compatibility.toFixed(1)} / 100</strong></p>` : '';
+    $('detail').innerHTML = `<h3>${esc(row.severity[0].toUpperCase()+row.severity.slice(1))} style difference</h3><p>${esc(row.reasons[0])}</p>${compatibility}${row.reasons.length > 1 ? `<h4>Surrounding passage patterns</h4>${row.reasons.slice(1).map(r=>`<p>${esc(r)}</p>`).join('')}` : ''}<button class="secondary" id="back-to-draft">Edit this part of your draft ↗</button>`;
+    $('back-to-draft').onclick = () => {
+      if (draft.value === submitted) { const selection = StyleView.selectionOffsets(submitted,row); draft.focus(); draft.setSelectionRange(selection.start,selection.end); revealSelection(selection.start); }
+      else draft.focus();
+      draft.scrollIntoView({block:'center',behavior:'smooth'});
+    };
+    if (scroll) { const highlight = document.querySelector(`[data-segment="${index}"]`); highlight?.scrollIntoView({block:'center',behavior:'smooth'}); highlight?.focus({preventScroll:true}); }
+    if (focus) $('detail').focus();
+  }
+  function render(data, text) {
+    segments = StyleView.orderRanges(text,data.segments);
+    setText('score',data.score.toFixed(1)); $('meter').style.width = `${Math.max(0,Math.min(100,data.score))}%`;
+    setText('comparison',StyleView.scoreChange(last ? last.score : null,data.score));
+    setText('decision',data.decision.replaceAll('_',' ')); $('decision').className = `badge ${data.decision === 'MISMATCH' ? 'mismatch' : ''}`;
+    setText('evidence',data.evidence_strength); setText('analyzed-count',data.word_count.toLocaleString());
+    const notices = [...(data.warnings || [])];
+    if (data.evidence_strength === 'LOW' && !notices.length) notices.push('Limited evidence. Component disagreement can reduce confidence in this comparison.');
+    setText('notice',notices.join(' ')); $('notice').hidden = notices.length === 0;
+    const thresholds = data.thresholds;
+    setText('thresholds', thresholds.match === null ? 'No calibrated decision thresholds are available.' : `Match begins at ${thresholds.match.toFixed(1)}.${thresholds.mismatch === null ? ' A separate mismatch boundary is unavailable.' : ` Mismatch is below ${thresholds.mismatch.toFixed(1)}.`} These boundaries come from the existing fingerprint; 50 has no special meaning.`);
+    $('analysis-text').innerHTML = StyleView.highlightHTML(text,segments);
+    $('mismatches').replaceChildren();
+    for (const [i,row] of (data.largest_mismatches || []).entries()) {
+      const index = segments.findIndex(s => s.start === row.start && s.end === row.end);
+      if (index < 0) continue;
+      const finding = document.createElement('button'); finding.className = 'finding';
+      finding.innerHTML = `<span class="finding-top"><span>0${i+1} · ${esc(row.severity)} difference</span><span>${row.delta === null ? 'Passage evidence' : `+${row.delta.toFixed(1)} if removed`}</span></span><span class="finding-quote">${esc(row.text)}</span><span class="finding-reason">${Number.isFinite(row.compatibility) ? `Passage compatibility: ${row.compatibility.toFixed(1)} / 100<br>` : ''}Surrounding passage pattern: ${esc(row.reasons.find(r => !r.startsWith('Removing') && !r.startsWith('This sentence')) || row.reasons[0])}</span>`;
+      finding.onclick = () => selectSegment(index,true,false); $('mismatches').append(finding);
+    }
+    if (!$('mismatches').children.length) { const p = document.createElement('p'); p.className = 'quiet'; p.textContent = 'No clear sentence-level differences surfaced. Style variation can still appear in the overall score.'; $('mismatches').append(p); }
+    $('strengths').replaceChildren();
+    for (const row of data.strongest_matches || []) {
+      const li = document.createElement('li'); const check = document.createElement('span'); check.className = 'check'; check.textContent = '✓'; check.setAttribute('aria-hidden','true');
+      const description = document.createElement('span'); description.textContent = row.description; li.append(check,description); $('strengths').append(li);
+    }
+    if (!$('strengths').children.length) { const li = document.createElement('li'); li.textContent = 'No representative strengths are available for this draft.'; $('strengths').append(li); }
+    $('detail').hidden = true; $('empty').hidden = true; $('results').hidden = false; $('analysis-card').hidden = false;
+    setText('result-label','Analysis complete'); submitted = text; last = data; updateDraft();
+  }
+  async function analyze() {
+    if (busy || button.disabled) return;
+    if (Array.from(draft.value).length > 50000) { showError('Use no more than 50,000 characters before analyzing.'); return; }
+    const text = draft.value; busy = true; button.disabled = true; $('error').hidden = true;
+    setText('button-label','Analyzing writing…'); setText('result-label','Analyzing writing…'); button.classList.add('busy');
+    try {
+      const response = await fetch('/api/analyze', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text}),cache:'no-store'});
+      let data; try { data = await response.json(); } catch (_) { throw new Error('The server returned an unreadable result. Try again.'); }
+      if (!response.ok) throw new Error(data.message || 'The analysis request failed. Try again.');
+      render(data,text);
+    } catch (err) { showError(err instanceof TypeError ? 'Could not reach the local server. Check that it is running, then try again.' : err.message); setText('result-label',last ? 'Previous analysis' : 'Try again when ready'); }
+    finally { busy = false; button.classList.remove('busy'); updateDraft(); }
+  }
+  draft.addEventListener('input',updateDraft); button.addEventListener('click',analyze);
+  document.addEventListener('keydown',event=>{ if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') { event.preventDefault(); analyze(); } });
+  $('analysis-text').addEventListener('click',event=>{const target=event.target.closest('[data-segment]'); if(target) selectSegment(Number(target.dataset.segment),false,true);});
+  $('analysis-text').addEventListener('mouseover',event=>{const target=event.target.closest('[data-segment]'); if(target) selectSegment(Number(target.dataset.segment));});
+  $('analysis-text').addEventListener('focusin',event=>{const target=event.target.closest('[data-segment]'); if(target) selectSegment(Number(target.dataset.segment));});
+  $('analysis-text').addEventListener('keydown',event=>{const target=event.target.closest('[data-segment]'); if(target && ['Enter',' '].includes(event.key)) {event.preventDefault();selectSegment(Number(target.dataset.segment),false,true);}});
+  health();
+})();
+</script>
+</body></html>
